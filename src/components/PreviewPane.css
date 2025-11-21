@@ -1,0 +1,54 @@
+.preview-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: #1a1a1a;
+}
+
+.preview-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem 1rem;
+  background: #222;
+  border-bottom: 1px solid #3a3a3a;
+}
+
+.preview-header h3 {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #999;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.inspector-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.875rem;
+  color: #ccc;
+  cursor: pointer;
+}
+
+.inspector-toggle input {
+  cursor: pointer;
+}
+
+.preview-content {
+  flex: 1;
+  position: relative;
+  overflow: auto;
+  background: #1a1a1a;
+  width: 100%;
+}
+
+.preview-iframe {
+  width: 100%;
+  height: 100%;
+  min-height: 600px;
+  border: none;
+  background: white;
+  display: block;
+}
+

@@ -1,0 +1,50 @@
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  width: 100vw;
+}
+
+.app-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem 2rem;
+  background: #2a2a2a;
+  border-bottom: 1px solid #3a3a3a;
+  z-index: 100;
+}
+
+.app-header h1 {
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: #fff;
+}
+
+.app-layout {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+  width: 100%;
+}
+
+.preview-section {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background: #1a1a1a;
+  position: relative;
+  min-width: 0; /* Allows flex item to shrink below content size */
+  overflow: hidden;
+}
+
+.right-panel {
+  width: 280px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: #222;
+  border-left: 1px solid #3a3a3a;
+}
+

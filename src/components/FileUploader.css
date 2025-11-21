@@ -1,0 +1,72 @@
+.file-uploader {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  width: 100vw;
+  padding: 2rem;
+}
+
+.upload-zone {
+  border: 2px dashed #555;
+  border-radius: 12px;
+  padding: 4rem;
+  text-align: center;
+  background: #222;
+  transition: all 0.3s ease;
+  cursor: pointer;
+  max-width: 600px;
+  width: 100%;
+}
+
+.upload-zone.dragging {
+  border-color: #4a9eff;
+  background: #2a2a3a;
+  transform: scale(1.02);
+}
+
+.upload-content svg {
+  color: #4a9eff;
+  margin-bottom: 1rem;
+}
+
+.upload-content h2 {
+  font-size: 1.5rem;
+  margin-bottom: 0.5rem;
+  color: #fff;
+}
+
+.upload-content p {
+  color: #999;
+  margin-bottom: 1.5rem;
+}
+
+.upload-buttons {
+  display: flex;
+  gap: 1rem;
+  justify-content: center;
+  margin-bottom: 1rem;
+}
+
+.upload-buttons button {
+  padding: 0.75rem 1.5rem;
+  background: #4a9eff;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 1rem;
+  font-weight: 500;
+  transition: background 0.2s;
+}
+
+.upload-buttons button:hover {
+  background: #3a8eef;
+}
+
+.upload-hint {
+  font-size: 0.875rem;
+  color: #666;
+  margin-top: 1rem;
+}
+
