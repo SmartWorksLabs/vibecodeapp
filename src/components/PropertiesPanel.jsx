@@ -473,10 +473,22 @@ function PropertiesPanel({ element, onPropertyChange, isInspectorEnabled }) {
                     const updatedChildren = [...childTextElements];
                     updatedChildren[index] = { ...childEl, textContent: e.target.value };
                     setChildTextElements(updatedChildren);
-                    handleChildTextChange(childEl, e.target.value);
+                    
+                    // Live updates for child text elements
+                    updateTextContentLive(e.target.value);
+                    
                     // Auto-resize textarea with max height
                     e.target.style.height = 'auto';
                     e.target.style.height = Math.min(e.target.scrollHeight, 200) + 'px';
+                  }}
+                  onBlur={(e) => {
+                    // Final update on blur for child text elements
+                    updateTextContentFinal(e.target.value);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && e.ctrlKey) {
+                      updateTextContentFinal(e.target.value); // Ctrl+Enter for immediate update
+                    }
                   }}
                   className="property-input property-textarea child-text-input"
                   rows="1"

@@ -1393,6 +1393,41 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
               
               // Only send selection to parent if inspector is enabled
               if (inspectorEnabled) {
+                // Find child text elements for containers
+                const childTextElements = [];
+                
+                // Get all descendant elements that contain text
+                const allElements = selectedElement.querySelectorAll('*');
+                allElements.forEach((el) => {
+                  const hasText = el.textContent && el.textContent.trim().length > 0;
+                  const isTextTag = ['H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'P', 'SPAN', 'A', 'STRONG', 'EM', 'B', 'I'].includes(el.tagName);
+                  const isLeafElement = el.children.length === 0;
+                  
+                  // Include if it's a text tag OR a leaf element with text
+                  if (hasText && (isTextTag || isLeafElement)) {
+                    const textContent = el.textContent.trim();
+                    
+                    // Avoid duplicates and very short text
+                    if (textContent.length > 2) {
+                      // Check if this text is already included in a parent element we've added
+                      const isDuplicate = childTextElements.some(existing => 
+                        existing.textContent.includes(textContent) || textContent.includes(existing.textContent)
+                      );
+                      
+                      if (!isDuplicate) {
+                        childTextElements.push({
+                          tagName: el.tagName,
+                          id: el.id || '',
+                          className: el.className || '',
+                          textContent: textContent
+                        });
+                      }
+                    }
+                  }
+                });
+                
+                console.log('Found child text elements in iframe (visible only):', childTextElements);
+                
                 // Send selection to parent (simplified for navigation fix)
                 window.parent.postMessage({
                   type: 'ELEMENT_SELECTED',
@@ -1401,7 +1436,8 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
                     id: selectedElement.id || '',
                     className: selectedElement.className || '',
                     textContent: selectedElement.textContent?.trim() || '',
-                    uniqueId: selectedElement.dataset.vibecanvasId
+                    uniqueId: selectedElement.dataset.vibecanvasId,
+                    childTextElements: childTextElements
                   }
                 }, '*');
               }
