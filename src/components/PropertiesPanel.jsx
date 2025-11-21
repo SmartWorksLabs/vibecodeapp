@@ -1,11 +1,10 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import './PropertiesPanel.css'
 
 function PropertiesPanel({ element, onPropertyChange, isInspectorEnabled }) {
   const [properties, setProperties] = useState({
     textContent: '',
     placeholder: '',
-    childTextElements: [],
     backgroundColor: '#ffffff',
     color: '#000000',
     fontSize: '16px',
@@ -19,58 +18,74 @@ function PropertiesPanel({ element, onPropertyChange, isInspectorEnabled }) {
     height: 'auto',
     display: 'block'
   })
+  
+  // Local state for text inputs to prevent cursor jumping
+  const [localTextContent, setLocalTextContent] = useState('')
+  const [localPlaceholder, setLocalPlaceholder] = useState('')
+  const [childTextElements, setChildTextElements] = useState([])
+  const liveUpdateTimeoutRef = useRef(null)
 
   // Function to extract child text elements
   const getChildTextElements = useCallback((element) => {
-    if (!element || !element.tagName || !element.childNodes) {
+    if (!element || !element.tagName) {
       console.log('Invalid element passed to getChildTextElements:', element);
       return [];
     }
     
+    console.log('=== ANALYZING ELEMENT FOR CHILD TEXT ===');
+    console.log('Root element:', element.tagName, element.id, element.className);
+    console.log('Root element children count:', element.children?.length || 0);
+    
     const textElements = [];
     
-      // Function to recursively find text-containing elements
-      const findTextElements = (el, path = '') => {
-        // Safety checks
-        if (!el || !el.childNodes || !el.tagName) return;
+    // Simple approach: find all elements with text content within the selected element
+    const findAllTextElements = (container) => {
+      // Get all descendant elements
+      const allElements = container.querySelectorAll('*');
+      console.log('Total descendant elements found:', allElements.length);
+      
+      allElements.forEach((el, index) => {
+        const hasText = el.textContent && el.textContent.trim().length > 0;
+        const isTextTag = ['H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'P', 'SPAN', 'A', 'STRONG', 'EM', 'B', 'I'].includes(el.tagName);
+        const isLeafElement = el.children.length === 0;
         
-        try {
-          // Check if this element has direct text content (not just from children)
-          const directText = Array.from(el.childNodes)
-            .filter(node => node.nodeType === Node.TEXT_NODE)
-            .map(node => node.textContent.trim())
-            .filter(text => text.length > 0)
-            .join(' ');
+        // Include if it's a text tag OR a leaf element with text
+        if (hasText && (isTextTag || isLeafElement)) {
+          const textContent = el.textContent.trim();
           
-          // Also check if this is a leaf element with text content
-          const isLeafWithText = el.children.length === 0 && el.textContent && el.textContent.trim().length > 0;
-          
-          if (directText || isLeafWithText) {
-            const textToUse = directText || el.textContent.trim();
-            textElements.push({
-              element: el,
-              text: textToUse,
-              tagName: el.tagName,
-              className: el.className || '',
-              id: el.id || '',
-              path: path || `${el.tagName}${el.id ? '#' + el.id : ''}${el.className ? '.' + el.className.split(' ')[0] : ''}`
-            });
+          // Avoid duplicates and very short text
+          if (textContent.length > 2) {
+            // Check if this text is already included in a parent element we've added
+            const isDuplicate = textElements.some(existing => 
+              existing.textContent.includes(textContent) || textContent.includes(existing.textContent)
+            );
+            
+            if (!isDuplicate) {
+              console.log(`Found text element ${index + 1}: ${el.tagName} - "${textContent.substring(0, 50)}..."`);
+              textElements.push({
+                element: el,
+                text: textContent,
+                textContent: textContent,
+                tagName: el.tagName,
+                className: el.className || '',
+                id: el.id || ''
+              });
+            } else {
+              console.log(`Skipping duplicate text element: ${el.tagName} - "${textContent.substring(0, 30)}..."`);
+            }
           }
-          
-          // Always check child elements for more text
-          if (el.children) {
-            Array.from(el.children).forEach((child, index) => {
-              const childPath = `${path ? path + ' > ' : ''}${child.tagName}${child.id ? '#' + child.id : ''}${child.className ? '.' + child.className.split(' ')[0] : ''}`;
-              findTextElements(child, childPath);
-            });
-          }
-        } catch (error) {
-          console.error('Error processing element in findTextElements:', error, el);
         }
-      };
+      });
+    };
     
     try {
-      findTextElements(element);
+      findAllTextElements(element);
+      console.log('=== FINAL RESULT ===');
+      console.log('Total unique text elements found:', textElements.length);
+      textElements.forEach((te, i) => {
+        console.log(`  ${i + 1}. ${te.tagName}${te.id ? '#' + te.id : ''}${te.className ? '.' + te.className.split(' ')[0] : ''} - "${te.textContent.substring(0, 40)}..."`);
+      });
+      console.log('=== END ANALYSIS ===');
     } catch (error) {
       console.error('Error in getChildTextElements:', error, element);
     }
@@ -80,15 +95,15 @@ function PropertiesPanel({ element, onPropertyChange, isInspectorEnabled }) {
 
   useEffect(() => {
     if (element) {
-      // Use child text elements from the iframe if available, otherwise fallback to local detection
-      const childTexts = element.childTextElements || [];
+      console.log('PropertiesPanel received element:', element);
+      console.log('Element textContent:', element.textContent);
       
-      console.log('PropertiesPanel received element with childTextElements:', childTexts);
+      const newTextContent = element.textContent || '';
+      const newPlaceholder = element.placeholder || '';
       
       setProperties({
-        textContent: element.textContent || '',
-        placeholder: element.placeholder || '',
-        childTextElements: childTexts,
+        textContent: newTextContent,
+        placeholder: newPlaceholder,
         backgroundColor: element.styles?.backgroundColor || '#ffffff',
         color: element.styles?.color || '#000000',
         fontSize: element.styles?.fontSize || '16px',
@@ -102,8 +117,98 @@ function PropertiesPanel({ element, onPropertyChange, isInspectorEnabled }) {
         height: element.styles?.height || 'auto',
         display: element.styles?.display || 'block'
       })
+      
+      // Check for child text elements - use data from iframe if available
+      console.log('=== CHILD TEXT DETECTION DEBUG ===');
+      console.log('Element selected:', element.tagName, element.id, element.className);
+      console.log('Element object keys:', Object.keys(element));
+      console.log('Element.childTextElements:', element.childTextElements);
+      
+      let childTexts = [];
+      
+      // Use child text elements from iframe if available
+      if (element.childTextElements && Array.isArray(element.childTextElements)) {
+        console.log('Using child text elements from iframe:', element.childTextElements.length);
+        childTexts = element.childTextElements.map(child => ({
+          element: child, // This is the serialized element data
+          text: child.textContent || child.text || '',
+          textContent: child.textContent || child.text || '',
+          tagName: child.tagName || 'UNKNOWN',
+          className: child.className || '',
+          id: child.id || ''
+        }));
+      } else {
+        // Fallback to local detection (though this won't work with serialized elements)
+        console.log('No child text elements from iframe, trying local detection');
+        childTexts = getChildTextElements(element);
+      }
+      
+      console.log('Final child text elements found:', childTexts.length);
+      console.log('Child text elements:', childTexts);
+      
+      if (childTexts.length >= 2) {
+        // Multiple child text elements - show separate inputs
+        console.log('Using child text elements mode - found', childTexts.length, 'elements');
+        setChildTextElements(childTexts);
+        setLocalTextContent(''); // Clear main text content
+      } else {
+        // Single text element or no children - use main text content
+        console.log('Using single text content mode - only found', childTexts.length, 'elements');
+        setChildTextElements([]);
+        setLocalTextContent(newTextContent);
+      }
+      console.log('=== END CHILD TEXT DETECTION DEBUG ===');
+      
+      setLocalPlaceholder(newPlaceholder)
     }
   }, [element])
+
+  // Cleanup timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (liveUpdateTimeoutRef.current) {
+        clearTimeout(liveUpdateTimeoutRef.current);
+      }
+    };
+  }, [])
+
+  // Auto-resize textarea when text content changes
+  useEffect(() => {
+    const resizeTextarea = (textarea) => {
+      if (textarea) {
+        // Reset height to auto to get the correct scrollHeight
+        textarea.style.height = 'auto';
+        // Set height to scrollHeight to fit content (max 200px)
+        textarea.style.height = Math.min(textarea.scrollHeight, 200) + 'px';
+      }
+    };
+
+    // Resize main text content textarea
+    const mainTextarea = document.querySelector('.property-textarea:not(.child-text-input)');
+    resizeTextarea(mainTextarea);
+
+    // Resize all child text element textareas
+    const childTextareas = document.querySelectorAll('.child-text-input');
+    childTextareas.forEach(resizeTextarea);
+    
+  }, [localTextContent, childTextElements])
+
+  // Auto-resize child textareas when they first appear
+  useEffect(() => {
+    if (childTextElements.length > 0) {
+      // Small delay to ensure DOM is updated
+      setTimeout(() => {
+        const childTextareas = document.querySelectorAll('.child-text-input');
+        childTextareas.forEach(textarea => {
+          if (textarea) {
+            textarea.style.height = 'auto';
+            textarea.style.height = Math.min(textarea.scrollHeight, 200) + 'px';
+          }
+        });
+      }, 10);
+    }
+  }, [childTextElements.length])
+
 
   const parseSpacing = (value) => {
     const parts = value.split(' ').map(v => v.replace('px', ''))
@@ -133,25 +238,59 @@ function PropertiesPanel({ element, onPropertyChange, isInspectorEnabled }) {
     return 'solid'
   }
 
-  const handleChildTextChange = (textElement, newValue) => {
-    console.log('Updating child text:', { element: textElement, newValue });
-    
-    // Update the specific child element's text
-    if (onPropertyChange) {
-      onPropertyChange('childTextContent', {
-        element: textElement,
-        newText: newValue
-      });
+  // Live text content update (short debounce for real-time feel)
+  const updateTextContentLive = useCallback((value) => {
+    if (liveUpdateTimeoutRef.current) {
+      clearTimeout(liveUpdateTimeoutRef.current);
     }
     
-    // Update local state
-    setProperties(prev => ({
-      ...prev,
-      childTextElements: prev.childTextElements.map(el => 
-        el === textElement ? { ...el, text: newValue } : el
-      )
-    }));
-  };
+    liveUpdateTimeoutRef.current = setTimeout(() => {
+      console.log('=== LIVE TEXT UPDATE DEBUG ===');
+      console.log('Live text content update:', value);
+      console.log('onPropertyChange function exists:', !!onPropertyChange);
+      
+      if (onPropertyChange) {
+        console.log('Calling onPropertyChange with textContent (live)');
+        onPropertyChange('textContent', value);
+      }
+      setProperties(prev => ({ ...prev, textContent: value }));
+      console.log('=== END LIVE TEXT UPDATE DEBUG ===');
+    }, 150); // 150ms for real-time feel
+  }, [onPropertyChange]);
+
+  // Final text content update (immediate on blur/enter)
+  const updateTextContentFinal = useCallback((value) => {
+    if (liveUpdateTimeoutRef.current) {
+      clearTimeout(liveUpdateTimeoutRef.current);
+    }
+    
+    console.log('=== FINAL TEXT UPDATE DEBUG ===');
+    console.log('Final text content update called with value:', value);
+    console.log('onPropertyChange function exists:', !!onPropertyChange);
+    console.log('Current element:', element);
+    
+    if (onPropertyChange) {
+      console.log('Calling onPropertyChange with textContent');
+      onPropertyChange('textContent', value);
+    } else {
+      console.error('onPropertyChange is not available!');
+    }
+    setProperties(prev => ({ ...prev, textContent: value }));
+    console.log('=== END FINAL TEXT UPDATE DEBUG ===');
+  }, [onPropertyChange, element]);
+
+  // Handle child text element updates
+  const handleChildTextChange = useCallback((childElement, newText) => {
+    console.log('=== CHILD TEXT UPDATE DEBUG ===');
+    console.log('Updating child text:', childElement, 'to:', newText);
+    
+    if (onPropertyChange) {
+      // Update the specific child element
+      onPropertyChange('childTextContent', newText, childElement);
+    }
+    
+    console.log('=== END CHILD TEXT UPDATE DEBUG ===');
+  }, [onPropertyChange]);
 
   const handlePropertyChange = (prop, value) => {
     console.log('PropertiesPanel.handlePropertyChange:', { prop, value });
@@ -207,6 +346,104 @@ function PropertiesPanel({ element, onPropertyChange, isInspectorEnabled }) {
     )
   }
 
+  // Convert technical HTML terms to user-friendly names
+  const getFriendlyElementName = (childEl) => {
+    const tagName = childEl.tagName?.toLowerCase() || 'text';
+    const className = childEl.className || '';
+    const id = childEl.id || '';
+    
+    // Create a base friendly name from the tag
+    let friendlyName = '';
+    
+    switch (tagName) {
+      case 'h1':
+        friendlyName = 'Main Heading';
+        break;
+      case 'h2':
+        friendlyName = 'Section Heading';
+        break;
+      case 'h3':
+        friendlyName = 'Subheading';
+        break;
+      case 'h4':
+      case 'h5':
+      case 'h6':
+        friendlyName = 'Small Heading';
+        break;
+      case 'p':
+        friendlyName = 'Paragraph';
+        break;
+      case 'span':
+        friendlyName = 'Text';
+        break;
+      case 'a':
+        friendlyName = 'Link';
+        break;
+      case 'div':
+        friendlyName = 'Text Block';
+        break;
+      case 'strong':
+      case 'b':
+        friendlyName = 'Bold Text';
+        break;
+      case 'em':
+      case 'i':
+        friendlyName = 'Italic Text';
+        break;
+      case 'button':
+        friendlyName = 'Button';
+        break;
+      case 'label':
+        friendlyName = 'Label';
+        break;
+      case 'li':
+        friendlyName = 'List Item';
+        break;
+      default:
+        friendlyName = 'Text Element';
+    }
+    
+    // Add context from class names or IDs to make it more specific
+    if (className) {
+      const firstClass = className.split(' ')[0];
+      if (firstClass.includes('title')) {
+        friendlyName = 'Title';
+      } else if (firstClass.includes('subtitle')) {
+        friendlyName = 'Subtitle';
+      } else if (firstClass.includes('description')) {
+        friendlyName = 'Description';
+      } else if (firstClass.includes('tag')) {
+        friendlyName = 'Tag';
+      } else if (firstClass.includes('price')) {
+        friendlyName = 'Price';
+      } else if (firstClass.includes('address')) {
+        friendlyName = 'Address';
+      } else if (firstClass.includes('feature')) {
+        friendlyName = 'Feature';
+      } else if (firstClass.includes('category')) {
+        friendlyName = 'Category';
+      } else if (firstClass.includes('label')) {
+        friendlyName = 'Label';
+      } else if (firstClass.includes('name')) {
+        friendlyName = 'Name';
+      } else if (firstClass.includes('content')) {
+        friendlyName = 'Content';
+      }
+    }
+    
+    if (id) {
+      if (id.includes('title')) {
+        friendlyName = 'Title';
+      } else if (id.includes('subtitle')) {
+        friendlyName = 'Subtitle';
+      } else if (id.includes('description')) {
+        friendlyName = 'Description';
+      }
+    }
+    
+    return friendlyName;
+  }
+
   return (
     <div className="properties-panel">
       <div className="properties-header">
@@ -219,57 +456,87 @@ function PropertiesPanel({ element, onPropertyChange, isInspectorEnabled }) {
       </div>
       
       <div className="properties-content">
-        {/* Debug: Show what we found */}
-        {console.log('Child text elements found:', properties.childTextElements)}
         
-        {/* Show individual text elements if container has multiple text children */}
-        {properties.childTextElements && properties.childTextElements.length > 0 ? (
+        {/* Show child text elements if multiple, otherwise show single text content */}
+        {childTextElements.length > 1 ? (
           <div className="property-group">
-            <label className="property-label">Text Contents</label>
-            <div className="child-text-elements">
-              {properties.childTextElements.map((textEl, index) => (
-                <div key={index} className="child-text-item">
-                  <label className="child-text-label">
-                    {textEl.path}
-                  </label>
-                  <input
-                    type="text"
-                    value={textEl.text}
-                    onChange={(e) => handleChildTextChange(textEl, e.target.value)}
-                    className="property-input child-text-input"
-                    placeholder={`Edit ${textEl.tagName} text`}
-                  />
-                </div>
-              ))}
-            </div>
-          </div>
-        ) : (
-          // Show single text content for simple elements
-          <>
-            <div className="property-group">
-              <label className="property-label">Text Content</label>
-              <input
-                type="text"
-                value={properties.textContent}
-                onChange={(e) => handlePropertyChange('textContent', e.target.value)}
-                className="property-input"
-              />
-            </div>
-            
-            {/* Show placeholder field for input elements */}
-            {element && (element.tagName === 'input' || element.tagName === 'textarea') && (
-              <div className="property-group">
-                <label className="property-label">Placeholder Text</label>
-                <input
-                  type="text"
-                  value={properties.placeholder}
-                  onChange={(e) => handlePropertyChange('placeholder', e.target.value)}
-                  className="property-input"
-                  placeholder="Enter placeholder text"
+            <label className="property-label">Text Elements ({childTextElements.length})</label>
+            {childTextElements.map((childEl, index) => (
+              <div key={index} className="child-text-group">
+                <label className="child-text-label">
+                  {getFriendlyElementName(childEl)}
+                </label>
+                <textarea
+                  value={childEl.textContent}
+                  onChange={(e) => {
+                    // Update the child element's text content
+                    const updatedChildren = [...childTextElements];
+                    updatedChildren[index] = { ...childEl, textContent: e.target.value };
+                    setChildTextElements(updatedChildren);
+                    handleChildTextChange(childEl, e.target.value);
+                    // Auto-resize textarea with max height
+                    e.target.style.height = 'auto';
+                    e.target.style.height = Math.min(e.target.scrollHeight, 200) + 'px';
+                  }}
+                  className="property-input property-textarea child-text-input"
+                  rows="1"
+                  style={{ 
+                    resize: 'none', 
+                    overflow: 'hidden',
+                    minHeight: 'var(--font-md)',
+                    lineHeight: '1.4'
+                  }}
                 />
               </div>
-            )}
-          </>
+            ))}
+          </div>
+        ) : (
+          <div className="property-group">
+            <label className="property-label">Text Content</label>
+            <textarea
+              value={localTextContent}
+              onChange={(e) => {
+                setLocalTextContent(e.target.value);
+                updateTextContentLive(e.target.value); // Live updates as you type
+                // Auto-resize textarea
+                e.target.style.height = 'auto';
+                e.target.style.height = e.target.scrollHeight + 'px';
+              }}
+              onBlur={(e) => {
+                updateTextContentFinal(e.target.value); // Final update on blur
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && e.ctrlKey) {
+                  updateTextContentFinal(e.target.value); // Ctrl+Enter for immediate update
+                }
+              }}
+              className="property-input property-textarea"
+              rows="1"
+              style={{ 
+                resize: 'none', 
+                overflow: 'hidden',
+                minHeight: 'var(--font-md)',
+                lineHeight: '1.4'
+              }}
+            />
+          </div>
+        )}
+        
+        {/* Show placeholder field for input elements */}
+        {element && (element.tagName === 'input' || element.tagName === 'textarea') && (
+          <div className="property-group">
+            <label className="property-label">Placeholder Text</label>
+            <input
+              type="text"
+              value={localPlaceholder}
+              onChange={(e) => {
+                setLocalPlaceholder(e.target.value);
+                handlePropertyChange('placeholder', e.target.value);
+              }}
+              className="property-input"
+              placeholder="Enter placeholder text"
+            />
+          </div>
         )}
 
         <div className="property-group">

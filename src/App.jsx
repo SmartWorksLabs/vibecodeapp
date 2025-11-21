@@ -17,11 +17,23 @@ function App() {
   const [fontSize, setFontSize] = useState('medium') // small, medium, large
   const [gridOverlay, setGridOverlay] = useState('none') // none, small, medium, large, custom
   const [gridColor, setGridColor] = useState('blue') // blue, white, red, green, purple, orange
+  const [pendingTextChanges, setPendingTextChanges] = useState(new Map())
 
   // Debug state changes
   useEffect(() => {
     console.log('App.jsx: isInspectorEnabled state changed to:', isInspectorEnabled)
   }, [isInspectorEnabled])
+
+  // Apply pending text changes when project files change (like when loading a new project)
+  useEffect(() => {
+    return () => {
+      // Cleanup: apply any pending changes when component unmounts
+      if (pendingTextChanges.size > 0) {
+        console.log('Component unmounting - persisting pending text changes');
+        applyPendingTextChanges(true); // Force persist to file on unmount
+      }
+    };
+  }, [projectFiles])
   const [previewKey, setPreviewKey] = useState(0)
   const previewPaneRef = useRef(null)
 
@@ -52,6 +64,10 @@ function App() {
     console.log('handleElementSelect called with inspectorState:', inspectorState)
     console.log('Current isInspectorEnabled:', isInspectorEnabled)
     console.log('Will update inspector state?', inspectorState !== null && inspectorState !== undefined)
+    
+    // Don't apply pending changes when just switching elements in the same file
+    // Text changes will persist in the preview and be saved when navigating away from the file
+    console.log('Element switch - keeping text changes in preview only');
     
     setSelectedElement(element)
     
@@ -95,25 +111,32 @@ function App() {
     setGridColor(newGridColor)
   }
 
-  const handlePropertyChange = (property, value) => {
-    console.log('App.handlePropertyChange called:', { property, value, selectedElement });
+  const handlePropertyChange = (property, value, childElement = null) => {
+    console.log('=== APP PROPERTY CHANGE DEBUG ===');
+    console.log('App.handlePropertyChange called:', { property, value, childElement });
+    console.log('selectedElement:', selectedElement);
+    console.log('previewPaneRef.current exists:', !!previewPaneRef.current);
     
     if (!selectedElement || !previewPaneRef.current) {
       console.warn('Cannot update property - missing selectedElement or previewPaneRef');
+      console.log('selectedElement exists:', !!selectedElement);
+      console.log('previewPaneRef.current exists:', !!previewPaneRef.current);
       return;
     }
 
     // Handle child text content updates
     if (property === 'childTextContent') {
-      console.log('Updating child text content:', value);
-      previewPaneRef.current.updateElementStyle('childTextContent', value);
+      console.log('Updating child text content:', value, 'for element:', childElement);
+      previewPaneRef.current.updateElementStyle('childTextContent', value, childElement);
       return;
     }
 
     // Handle text content separately (update HTML)
     if (property === 'textContent') {
+      console.log('*** TEXT CONTENT UPDATE DETECTED ***');
       console.log('Updating text content:', value);
       updateHTMLTextContent(value);
+      console.log('*** TEXT CONTENT UPDATE COMPLETE ***');
       return;
     }
 
@@ -123,20 +146,122 @@ function App() {
 
     // Also update CSS file for persistence (but don't trigger reload)
     updateCSSFile(property, value);
+    console.log('=== END APP PROPERTY CHANGE DEBUG ===');
   }
 
   const updateHTMLTextContent = (newText) => {
+    console.log('=== UPDATE HTML TEXT CONTENT DEBUG ===');
     console.log('updateHTMLTextContent called with:', newText);
+    console.log('previewPaneRef.current exists:', !!previewPaneRef.current);
     
-    // For now, just update the preview immediately via postMessage
-    // The HTML file update can be done later for persistence
+    // Update the preview immediately via postMessage
     if (previewPaneRef.current) {
       console.log('Sending text content update to iframe');
       previewPaneRef.current.updateElementStyle('textContent', newText);
+    } else {
+      console.error('previewPaneRef.current is not available!');
     }
     
-    // TODO: Also update the actual HTML file for persistence
-    // This would require proper HTML parsing to find and update the specific element
+    // Store the text change for later persistence (don't update file immediately to avoid reload)
+    if (selectedElement && selectedFile) {
+      const elementKey = `${selectedFile.name}_${selectedElement.tagName}_${selectedElement.id || selectedElement.className || selectedElement.textContent}`;
+      setPendingTextChanges(prev => new Map(prev.set(elementKey, {
+        fileName: selectedFile.name,
+        element: selectedElement,
+        newText: newText,
+        originalText: selectedElement.textContent
+      })));
+      console.log('Text change stored for persistence:', elementKey, newText);
+    }
+    console.log('=== END UPDATE HTML TEXT CONTENT DEBUG ===');
+  }
+
+  const applyPendingTextChanges = (forcePersist = false) => {
+    console.log('=== APPLYING PENDING TEXT CHANGES ===');
+    console.log('Pending changes count:', pendingTextChanges.size);
+    console.log('Force persist to file:', forcePersist);
+    
+    if (forcePersist) {
+      // Only update files when explicitly requested (like on project save/export)
+      pendingTextChanges.forEach((change, elementKey) => {
+        console.log('Persisting change to file:', elementKey, change.newText);
+        updateHTMLFile(change.newText, change.element, change.fileName);
+      });
+    } else {
+      // Just clear the pending changes without file updates to avoid reload loop
+      console.log('Clearing pending changes without file persistence');
+    }
+    
+    // Clear pending changes after applying
+    setPendingTextChanges(new Map());
+    console.log('=== PENDING TEXT CHANGES APPLIED ===');
+  }
+
+  const updateHTMLFile = (newText, element = selectedElement, fileName = selectedFile?.name) => {
+    const targetElement = element || selectedElement;
+    const targetFile = fileName ? projectFiles?.find(f => f.name === fileName) : selectedFile;
+    
+    if (!targetElement || !targetFile || targetFile.type !== 'html') {
+      console.warn('Cannot update HTML file - missing element or file is not HTML');
+      return;
+    }
+
+    console.log('Updating HTML file with new text:', newText);
+    console.log('Target element:', targetElement);
+    console.log('Target file:', targetFile.name);
+
+    let htmlContent = targetFile.content;
+    
+    // Create a simple text replacement strategy
+    // This is a basic implementation - for complex cases, we'd need proper HTML parsing
+    
+    // Try to find and replace the text content
+    const elementTag = targetElement.tagName.toLowerCase();
+    const elementId = targetElement.id;
+    const elementClass = targetElement.className;
+    const originalText = targetElement.textContent;
+
+    console.log('Looking for element:', { tag: elementTag, id: elementId, class: elementClass, originalText });
+
+    // Strategy 1: If element has an ID, find it specifically
+    if (elementId) {
+      const idRegex = new RegExp(`(<${elementTag}[^>]*id=["']${elementId}["'][^>]*>)([^<]*)(</[^>]*>)`, 'gi');
+      const match = htmlContent.match(idRegex);
+      if (match) {
+        htmlContent = htmlContent.replace(idRegex, `$1${newText}$3`);
+        console.log('Updated HTML using ID selector');
+        handleFileUpdate(selectedFile.name, htmlContent);
+        return;
+      }
+    }
+
+    // Strategy 2: If element has a class, try to find it
+    if (elementClass) {
+      const firstClass = elementClass.split(' ')[0];
+      const classRegex = new RegExp(`(<${elementTag}[^>]*class=["'][^"']*${firstClass}[^"']*["'][^>]*>)([^<]*)(</[^>]*>)`, 'gi');
+      const match = htmlContent.match(classRegex);
+      if (match) {
+        htmlContent = htmlContent.replace(classRegex, `$1${newText}$3`);
+        console.log('Updated HTML using class selector');
+        handleFileUpdate(selectedFile.name, htmlContent);
+        return;
+      }
+    }
+
+    // Strategy 3: Simple text replacement (fallback)
+    if (originalText && originalText.trim().length > 0) {
+      // Escape special regex characters in the original text
+      const escapedOriginalText = originalText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const textRegex = new RegExp(`(>${escapedOriginalText}<)`, 'g');
+      if (htmlContent.match(textRegex)) {
+        htmlContent = htmlContent.replace(textRegex, `>${newText}<`);
+        console.log('Updated HTML using text replacement');
+        handleFileUpdate(targetFile.name, htmlContent);
+        return;
+      }
+    }
+
+    console.warn('Could not find element in HTML to update text content');
   }
 
   const updateCSSFile = (property, value) => {
@@ -193,6 +318,20 @@ function App() {
     handleFileUpdate(cssFile.name, cssContent)
   }
 
+  const handleFileSelect = (file) => {
+    console.log('=== FILE SELECT DEBUG ===');
+    console.log('Switching from file:', selectedFile?.name, 'to file:', file?.name);
+    
+    // Apply pending text changes when switching files
+    if (pendingTextChanges.size > 0 && selectedFile && file && selectedFile.name !== file.name) {
+      console.log('Applying pending text changes before file switch');
+      applyPendingTextChanges(true); // Force persist when switching files
+    }
+    
+    setSelectedFile(file);
+    console.log('=== END FILE SELECT DEBUG ===');
+  }
+
   return (
     <div className={`app font-size-${fontSize}`}>
       
@@ -219,7 +358,7 @@ function App() {
             <TabPanel
               files={projectFiles}
               selectedFile={selectedFile}
-              onFileSelect={setSelectedFile}
+              onFileSelect={handleFileSelect}
               selectedElement={selectedElement}
               onPropertyChange={handlePropertyChange}
               onFileUpdate={handleFileUpdate}

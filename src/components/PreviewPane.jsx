@@ -42,15 +42,16 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
   }, [isInspecting]);
 
   useImperativeHandle(ref, () => ({
-    updateElementStyle: (property, value) => {
-      console.log('PreviewPane.updateElementStyle called:', { property, value });
+    updateElementStyle: (property, value, childElement = null) => {
+      console.log('PreviewPane.updateElementStyle called:', { property, value, childElement });
       
       if (iframeRef.current?.contentWindow) {
         console.log('Sending UPDATE_STYLE message to iframe');
         iframeRef.current.contentWindow.postMessage({
           type: 'UPDATE_STYLE',
           property: property,
-          value: value
+          value: value,
+          childElement: childElement
         }, '*');
       } else {
         console.warn('No iframe contentWindow available for style update');
@@ -402,7 +403,7 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
               tagName: element.tagName.toLowerCase(),
               id: element.id || '',
               className: element.className || '',
-              textContent: element.textContent?.trim().substring(0, 50) || '',
+              textContent: element.textContent?.trim() || '',
               placeholder: element.placeholder || '', // Add placeholder support
               childTextElements: childTextElements, // Add this to the element info
               styles: {
@@ -446,7 +447,7 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
           let inspectorEnabled = true;
 
           document.addEventListener('click', function(e) {
-            // If inspector is disabled, allow normal behavior
+            // If inspector is disabled, handle navigation and prevent issues
             if (!inspectorEnabled) {
               // For links, we need to handle navigation within the iframe context
               if (e.target.tagName === 'A' && e.target.href) {
@@ -461,6 +462,14 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
                 }
                 return;
               }
+              
+              // Block standalone image clicks to prevent white screen
+              if (e.target.tagName === 'IMG') {
+                e.preventDefault();
+                console.log('Standalone image clicked with inspector disabled - blocking action');
+                return false;
+              }
+              
               return; // Let other clicks work normally
             }
 
@@ -806,7 +815,9 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
                   
                 } else if (e.data.property === 'textContent') {
                   console.log('Updating text content to:', e.data.value);
+                  console.log('Target element before update:', targetElement.textContent);
                   targetElement.textContent = e.data.value;
+                  console.log('Target element after update:', targetElement.textContent);
                   
                   // CRITICAL: Re-establish selection after text change
                   selectedElement = targetElement;
@@ -1164,7 +1175,7 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
                 tagName: element.tagName.toLowerCase(),
                 id: element.id || '',
                 className: element.className || '',
-                textContent: element.textContent?.trim().substring(0, 50) || '',
+                textContent: element.textContent?.trim() || '',
                 placeholder: element.placeholder || '', // Add placeholder support
                 childTextElements: childTextElements, // Add this to the element info
                 styles: {
@@ -1300,6 +1311,12 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
                   if (clickedElement.tagName === 'IMG' && clickedElement.parentElement && clickedElement.parentElement.tagName === 'A') {
                     href = clickedElement.parentElement.getAttribute('href');
                     break;
+                  }
+                  
+                  // Check for standalone images - prevent any action
+                  if (clickedElement.tagName === 'IMG') {
+                    console.log('Standalone image clicked - blocking all actions');
+                    return false; // Block standalone image clicks completely
                   }
                   
                   clickedElement = clickedElement.parentElement;

@@ -189,7 +189,7 @@ function FileUploader({ onProjectLoad }) {
             Supports: .html, .css, .js files
           </p>
           <p className="upload-hint" style={{ fontSize: '0.75rem', marginTop: '0.5rem' }}>
-            💡 Tip: Use "Select Folder" for projects with subdirectories
+            Tip: Use "Select Folder" for projects with subdirectories
           </p>
         </div>
       </div>
