@@ -1082,6 +1082,112 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
             // Flag to completely disable inspector functionality
             let inspectorScriptActive = false;
 
+            // Helper function to check if element is visually hidden
+            function isElementHidden(el) {
+              if (!el) return true;
+              
+              const computedStyle = window.getComputedStyle(el);
+              const rect = el.getBoundingClientRect();
+              
+              // Check for common hiding methods
+              const isDisplayNone = computedStyle.display === 'none';
+              const isVisibilityHidden = computedStyle.visibility === 'hidden';
+              const isOpacityZero = computedStyle.opacity === '0';
+              
+              // Check for screen reader only classes
+              const hasHiddenClass = el.classList.contains('sr-only') || 
+                                   el.classList.contains('visually-hidden') || 
+                                   el.classList.contains('screen-reader-only') ||
+                                   el.classList.contains('hidden');
+              
+              // Check if element is off-screen or has zero size
+              const isOffScreen = rect.width === 0 && rect.height === 0;
+              const isFarOffScreen = rect.right < 0 || rect.bottom < 0 || rect.left > window.innerWidth || rect.top > window.innerHeight;
+              
+              return isDisplayNone || isVisibilityHidden || isOpacityZero || hasHiddenClass || isOffScreen || isFarOffScreen;
+            }
+
+            // Function to get element info with child text elements
+            function getElementInfo(element) {
+              if (!element || element.nodeType !== Node.ELEMENT_NODE) return null;
+              
+              const computedStyle = window.getComputedStyle(element);
+              const rect = element.getBoundingClientRect();
+              
+              // Extract child text elements for multi-text editing
+              const childTextElements = [];
+              
+              function findTextElements(el, path = '') {
+                if (!el || !el.childNodes || !el.tagName) return;
+                
+                try {
+                  // Check for direct text content in this element
+                  let textToUse = '';
+                  Array.from(el.childNodes).forEach(node => {
+                    if (node.nodeType === Node.TEXT_NODE && node.textContent.trim().length > 0) {
+                      textToUse += node.textContent.trim() + ' ';
+                    }
+                  });
+                  textToUse = textToUse.trim();
+                  
+                  // Check if element is visually hidden
+                  const isHidden = isElementHidden(el);
+                  
+                  if (textToUse.length > 0 && !isHidden) {
+                    childTextElements.push({
+                      text: textToUse,
+                      tagName: el.tagName,
+                      className: el.className || '',
+                      id: el.id || '',
+                      path: path || el.tagName + (el.id ? '#' + el.id : '') + (el.className ? '.' + el.className.split(' ')[0] : ''),
+                      uniqueId: el.dataset.vibecanvasId || 'temp-' + Date.now() + '-' + Math.random().toString(36).substr(2, 5)
+                    });
+                  }
+                  
+                  // Recursively check child elements
+                  Array.from(el.children).forEach((child, index) => {
+                    const childPath = (path ? path + ' > ' : '') + child.tagName + (child.id ? '#' + child.id : '') + (child.className ? '.' + child.className.split(' ')[0] : '');
+                    findTextElements(child, childPath);
+                  });
+                } catch (error) {
+                  console.error('Error processing element in findTextElements:', error, el);
+                }
+              }
+              
+              // Find all text elements within this element
+              findTextElements(element);
+              
+              console.log('Found child text elements in iframe (visible only):', childTextElements);
+              
+              return {
+                tagName: element.tagName.toLowerCase(),
+                id: element.id || '',
+                className: element.className || '',
+                textContent: element.textContent?.trim().substring(0, 50) || '',
+                placeholder: element.placeholder || '', // Add placeholder support
+                childTextElements: childTextElements, // Add this to the element info
+                styles: {
+                  backgroundColor: computedStyle.backgroundColor,
+                  color: computedStyle.color,
+                  fontSize: computedStyle.fontSize,
+                  padding: computedStyle.padding,
+                  margin: computedStyle.margin,
+                  border: computedStyle.border,
+                  borderRadius: computedStyle.borderRadius,
+                  width: computedStyle.width,
+                  height: computedStyle.height,
+                  display: computedStyle.display
+                },
+                rect: {
+                  x: rect.x,
+                  y: rect.y,
+                  width: rect.width,
+                  height: rect.height
+                },
+                uniqueId: element.dataset.vibecanvasId
+              };
+            }
+
             function createHighlight() {
               highlightDiv = document.createElement('div');
               highlightDiv.style.position = 'absolute';
