@@ -8,20 +8,20 @@
 }
 
 .code-editor-header {
-  padding: 0.5rem 0.625rem;
+  padding: var(--padding-sm, 0.5rem) var(--padding-sm, 0.625rem);
   border-bottom: 1px solid #3a3a3a;
   background: #1a1a1a;
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: var(--gap-sm, 0.5rem);
 }
 
 .code-editor-header h3 {
-  font-size: 0.75rem;
+  font-size: var(--font-sm, 0.75rem);
   font-weight: 600;
   color: #999;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: calc(0.5px * var(--scale-factor, 1));
   font-family: 'Monaco', 'Menlo', monospace;
   margin: 0;
   flex: 1;

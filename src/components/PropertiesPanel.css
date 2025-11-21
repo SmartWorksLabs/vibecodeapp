@@ -8,25 +8,25 @@
 }
 
 .properties-header {
-  padding: 0.5rem 0.625rem;
+  padding: var(--padding-sm, 0.5rem) var(--padding-sm, 0.625rem);
   border-bottom: 1px solid #3a3a3a;
   background: #1a1a1a;
 }
 
 .properties-header h3 {
-  font-size: 0.875rem;
+  font-size: var(--font-md, 0.875rem);
   font-weight: 600;
   color: #999;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
-  margin-bottom: 0.5rem;
+  letter-spacing: calc(0.5px * var(--scale-factor, 1));
+  margin-bottom: var(--margin-sm, 0.5rem);
 }
 
 .element-info {
   display: flex;
-  gap: 0.5rem;
+  gap: var(--gap-sm, 0.5rem);
   flex-wrap: wrap;
-  font-size: 0.75rem;
+  font-size: var(--font-sm, 0.75rem);
   word-break: break-word;
   overflow-wrap: break-word;
   max-width: 100%;

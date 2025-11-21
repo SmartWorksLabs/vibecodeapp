@@ -2,9 +2,10 @@ import { useState } from 'react'
 import FileTree from './FileTree'
 import PropertiesPanel from './PropertiesPanel'
 import CodeEditor from './CodeEditor'
+import Settings from './Settings'
 import './TabPanel.css'
 
-function TabPanel({ files, selectedFile, onFileSelect, selectedElement, onPropertyChange, onFileUpdate, isInspectorEnabled }) {
+function TabPanel({ files, selectedFile, onFileSelect, selectedElement, onPropertyChange, onFileUpdate, isInspectorEnabled, isSettingsOpen, onSettingsClose, fontSize, onFontSizeChange, gridOverlay, onGridOverlayChange, gridColor, onGridColorChange }) {
   const [activeTab, setActiveTab] = useState('properties')
 
   const handleFileSelect = (file) => {
@@ -19,6 +20,23 @@ function TabPanel({ files, selectedFile, onFileSelect, selectedElement, onProper
       setActiveTab('code')
     }
     // If it's an HTML file, keep current tab (or could switch to properties)
+  }
+
+  // If settings is open, show settings instead of normal tabs
+  if (isSettingsOpen) {
+    return (
+      <div className="tab-panel">
+        <Settings 
+          onClose={onSettingsClose} 
+          fontSize={fontSize}
+          onFontSizeChange={onFontSizeChange}
+          gridOverlay={gridOverlay}
+          onGridOverlayChange={onGridOverlayChange}
+          gridColor={gridColor}
+          onGridColorChange={onGridColorChange}
+        />
+      </div>
+    )
   }
 
   return (

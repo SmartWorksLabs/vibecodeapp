@@ -5,21 +5,6 @@
   width: 100vw;
 }
 
-.app-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 1rem 2rem;
-  background: #2a2a2a;
-  border-bottom: 1px solid #3a3a3a;
-  z-index: 100;
-}
-
-.app-header h1 {
-  font-size: 1.5rem;
-  font-weight: 600;
-  color: #fff;
-}
 
 .app-layout {
   display: flex;
@@ -46,5 +31,73 @@
   overflow: hidden;
   background: #222;
   border-left: 1px solid #3a3a3a;
+}
+
+/* Global Font Size Classes with Proportional Scaling */
+.font-size-small {
+  --scale-factor: 0.85;
+  font-size: calc(1rem * var(--scale-factor));
+}
+
+.font-size-medium {
+  --scale-factor: 1;
+  font-size: calc(1rem * var(--scale-factor));
+}
+
+.font-size-large {
+  --scale-factor: 1.15;
+  font-size: calc(1rem * var(--scale-factor));
+}
+
+/* Scale all elements proportionally using CSS custom properties */
+.font-size-small *,
+.font-size-medium *,
+.font-size-large * {
+  /* Scale padding */
+  --padding-xs: calc(0.25rem * var(--scale-factor));
+  --padding-sm: calc(0.5rem * var(--scale-factor));
+  --padding-md: calc(0.75rem * var(--scale-factor));
+  --padding-lg: calc(1rem * var(--scale-factor));
+  --padding-xl: calc(1.5rem * var(--scale-factor));
+  --padding-2xl: calc(2rem * var(--scale-factor));
+  
+  /* Scale margins */
+  --margin-xs: calc(0.25rem * var(--scale-factor));
+  --margin-sm: calc(0.5rem * var(--scale-factor));
+  --margin-md: calc(0.75rem * var(--scale-factor));
+  --margin-lg: calc(1rem * var(--scale-factor));
+  --margin-xl: calc(1.5rem * var(--scale-factor));
+  --margin-2xl: calc(2rem * var(--scale-factor));
+  
+  /* Scale gaps */
+  --gap-xs: calc(0.25rem * var(--scale-factor));
+  --gap-sm: calc(0.5rem * var(--scale-factor));
+  --gap-md: calc(0.75rem * var(--scale-factor));
+  --gap-lg: calc(1rem * var(--scale-factor));
+  
+  /* Scale border radius */
+  --border-radius-sm: calc(3px * var(--scale-factor));
+  --border-radius-md: calc(4px * var(--scale-factor));
+  --border-radius-lg: calc(6px * var(--scale-factor));
+  
+  /* Scale icon sizes */
+  --icon-sm: calc(14px * var(--scale-factor));
+  --icon-md: calc(16px * var(--scale-factor));
+  --icon-lg: calc(20px * var(--scale-factor));
+  --icon-xl: calc(24px * var(--scale-factor));
+  
+  /* Scale font sizes */
+  --font-xs: calc(0.65rem * var(--scale-factor));
+  --font-sm: calc(0.75rem * var(--scale-factor));
+  --font-md: calc(0.875rem * var(--scale-factor));
+  --font-lg: calc(1rem * var(--scale-factor));
+  --font-xl: calc(1.25rem * var(--scale-factor));
+}
+
+/* Apply scaled values to existing elements */
+.font-size-small .right-panel,
+.font-size-medium .right-panel,
+.font-size-large .right-panel {
+  width: calc(280px * var(--scale-factor));
 }
 

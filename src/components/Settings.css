@@ -1,0 +1,117 @@
+.settings {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: #222;
+}
+
+.settings-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--padding-lg, 1rem);
+  border-bottom: 1px solid #3a3a3a;
+  background: #2a2a2a;
+}
+
+.settings-header h3 {
+  margin: 0;
+  color: #fff;
+  font-size: var(--font-lg, 1rem);
+  font-weight: 600;
+}
+
+.close-button {
+  background: none;
+  border: none;
+  color: #888;
+  cursor: pointer;
+  padding: var(--padding-xs, 4px);
+  border-radius: var(--border-radius-md, 4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+}
+
+.close-button:hover {
+  background: #3a3a3a;
+  color: #fff;
+}
+
+.close-button svg {
+  width: var(--icon-md, 16px);
+  height: var(--icon-md, 16px);
+}
+
+.settings-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--padding-md, 0.75rem);
+}
+
+.settings-section {
+  margin-bottom: var(--margin-xl, 1.5rem);
+}
+
+.settings-section:last-child {
+  margin-bottom: 0;
+}
+
+.settings-section h4 {
+  margin: 0 0 var(--margin-md, 0.75rem) 0;
+  color: #fff;
+  font-size: var(--font-xs, 0.8rem);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: calc(0.5px * var(--scale-factor, 1));
+  padding-bottom: var(--padding-sm, 0.5rem);
+  border-bottom: 1px solid #333;
+}
+
+.setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--padding-sm, 0.5rem) var(--padding-md, 0.75rem);
+  margin-bottom: var(--margin-xs, 0.25rem);
+  border-radius: var(--border-radius-lg, 6px);
+  transition: background-color 0.2s ease;
+}
+
+.setting-row:hover {
+  background: #2a2a2a;
+}
+
+.setting-row span {
+  color: #ccc;
+  font-size: var(--font-md, 0.85rem);
+  flex: 1;
+}
+
+.setting-row input[type="checkbox"] {
+  margin: 0;
+  accent-color: #007acc;
+  transform: scale(calc(0.9 * var(--scale-factor, 1)));
+}
+
+.compact-select {
+  background: #333;
+  border: 1px solid #444;
+  color: #fff;
+  padding: var(--padding-xs, 0.25rem) var(--padding-sm, 0.5rem);
+  border-radius: var(--border-radius-md, 4px);
+  font-size: var(--font-xs, 0.8rem);
+  min-width: calc(70px * var(--scale-factor, 1));
+  cursor: pointer;
+}
+
+.compact-select:focus {
+  outline: none;
+  border-color: #007acc;
+  box-shadow: 0 0 0 calc(2px * var(--scale-factor, 1)) rgba(0, 122, 204, 0.2);
+}
+
+.compact-select:hover {
+  border-color: #555;
+}

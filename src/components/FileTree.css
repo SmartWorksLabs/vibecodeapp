@@ -8,7 +8,7 @@
 }
 
 .file-tree-header {
-  padding: 0.5rem 0.625rem;
+  padding: var(--padding-sm, 0.5rem) var(--padding-sm, 0.625rem);
   border-bottom: 1px solid #3a3a3a;
   background: #1a1a1a;
 }
@@ -48,9 +48,9 @@
 .file-item {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  padding: 0.375rem 0.625rem;
-  border-radius: 4px;
+  gap: var(--gap-sm, 0.5rem);
+  padding: var(--padding-xs, 0.375rem) var(--padding-sm, 0.625rem);
+  border-radius: var(--border-radius-md, 4px);
   cursor: pointer;
   transition: background 0.2s;
   color: #ccc;
@@ -74,8 +74,8 @@
   justify-content: center;
   flex-shrink: 0;
   color: #4a9eff;
-  width: 16px;
-  height: 16px;
+  width: var(--icon-md, 16px);
+  height: var(--icon-md, 16px);
 }
 
 .file-icon svg {

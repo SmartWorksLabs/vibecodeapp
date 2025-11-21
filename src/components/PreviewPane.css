@@ -9,30 +9,60 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 0.75rem 1rem;
+  padding: var(--padding-md, 0.75rem) var(--padding-lg, 1rem);
   background: #222;
   border-bottom: 1px solid #3a3a3a;
 }
 
 .preview-header h3 {
-  font-size: 0.875rem;
+  font-size: var(--font-md, 0.875rem);
   font-weight: 600;
   color: #999;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: calc(0.5px * var(--scale-factor, 1));
+}
+
+.inspector-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-md, 0.75rem);
 }
 
 .inspector-toggle {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  font-size: 0.875rem;
+  gap: var(--gap-sm, 0.5rem);
+  font-size: var(--font-md, 0.875rem);
   color: #ccc;
   cursor: pointer;
 }
 
 .inspector-toggle input {
   cursor: pointer;
+  transform: scale(var(--scale-factor, 1));
+}
+
+.settings-button {
+  background: none;
+  border: none;
+  color: #007acc;
+  cursor: pointer;
+  padding: var(--padding-xs, 4px);
+  border-radius: var(--border-radius-md, 4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+}
+
+.settings-button:hover {
+  background: #3a3a3a;
+  color: #0099ff;
+}
+
+.settings-button svg {
+  width: var(--icon-md, 16px);
+  height: var(--icon-md, 16px);
 }
 
 .preview-content {

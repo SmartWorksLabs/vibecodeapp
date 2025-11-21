@@ -2,7 +2,6 @@ import { useState, useRef, useEffect } from 'react'
 import FileUploader from './components/FileUploader'
 import PreviewPane from './components/PreviewPane'
 import TabPanel from './components/TabPanel'
-import ExportButton from './components/ExportButton'
 import './App.css'
 
 function App() {
@@ -14,6 +13,10 @@ function App() {
     console.log('App: Initializing isInspectorEnabled state to: true')
     return true
   })
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false)
+  const [fontSize, setFontSize] = useState('medium') // small, medium, large
+  const [gridOverlay, setGridOverlay] = useState('none') // none, small, medium, large, custom
+  const [gridColor, setGridColor] = useState('blue') // blue, white, red, green, purple, orange
 
   // Debug state changes
   useEffect(() => {
@@ -74,6 +77,22 @@ function App() {
     if (!newInspectorState) {
       setSelectedElement(null)
     }
+  }
+
+  const handleSettingsToggle = () => {
+    setIsSettingsOpen(!isSettingsOpen)
+  }
+
+  const handleFontSizeChange = (newFontSize) => {
+    setFontSize(newFontSize)
+  }
+
+  const handleGridOverlayChange = (newGridOverlay) => {
+    setGridOverlay(newGridOverlay)
+  }
+
+  const handleGridColorChange = (newGridColor) => {
+    setGridColor(newGridColor)
   }
 
   const handlePropertyChange = (property, value) => {
@@ -175,13 +194,7 @@ function App() {
   }
 
   return (
-    <div className="app">
-      <header className="app-header">
-        <h1>VibeCanvas</h1>
-        {projectFiles && (
-          <ExportButton files={projectFiles} />
-        )}
-      </header>
+    <div className={`app font-size-${fontSize}`}>
       
       {!projectFiles ? (
         <FileUploader onProjectLoad={handleProjectLoad} />
@@ -196,6 +209,9 @@ function App() {
               onElementSelect={handleElementSelect}
               onInspectorToggle={handleInspectorToggle}
               isInspectorEnabled={isInspectorEnabled}
+              onSettingsToggle={handleSettingsToggle}
+              gridOverlay={gridOverlay}
+              gridColor={gridColor}
             />
           </div>
           
@@ -208,6 +224,14 @@ function App() {
               onPropertyChange={handlePropertyChange}
               onFileUpdate={handleFileUpdate}
               isInspectorEnabled={isInspectorEnabled}
+              isSettingsOpen={isSettingsOpen}
+              onSettingsClose={() => setIsSettingsOpen(false)}
+              fontSize={fontSize}
+              onFontSizeChange={handleFontSizeChange}
+              gridOverlay={gridOverlay}
+              onGridOverlayChange={handleGridOverlayChange}
+              gridColor={gridColor}
+              onGridColorChange={handleGridColorChange}
             />
           </aside>
         </div>

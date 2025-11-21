@@ -1,0 +1,98 @@
+.grid-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  pointer-events: none;
+  z-index: 10;
+  overflow: hidden;
+}
+
+.grid-svg {
+  width: 100%;
+  height: 100%;
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
+.grid-info {
+  position: absolute;
+  top: var(--padding-sm, 0.5rem);
+  right: var(--padding-sm, 0.5rem);
+  background: rgba(0, 0, 0, 0.8);
+  color: #4a9eff;
+  padding: var(--padding-xs, 0.25rem) var(--padding-sm, 0.5rem);
+  border-radius: var(--border-radius-md, 4px);
+  font-size: var(--font-xs, 0.7rem);
+  font-weight: 500;
+  backdrop-filter: blur(4px);
+  border: 1px solid rgba(74, 158, 255, 0.3);
+}
+
+.grid-label {
+  white-space: nowrap;
+}
+
+/* Grid type specific styles */
+.grid-small {
+  opacity: 0.8;
+}
+
+.grid-medium {
+  opacity: 0.7;
+}
+
+.grid-large {
+  opacity: 0.6;
+}
+
+.grid-flexible {
+  opacity: 0.75;
+}
+
+/* Responsive grid adjustments */
+@media (max-width: 768px) {
+  .grid-overlay {
+    opacity: 0.5;
+  }
+  
+  .grid-info {
+    font-size: calc(var(--font-xs, 0.7rem) * 0.9);
+    padding: calc(var(--padding-xs, 0.25rem) * 0.8) calc(var(--padding-sm, 0.5rem) * 0.8);
+  }
+}
+
+/* Animation for grid appearance */
+.grid-overlay {
+  animation: gridFadeIn 0.3s ease-out;
+}
+
+@keyframes gridFadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Hover effect for better visibility when needed */
+.preview-content:hover .grid-overlay {
+  opacity: 1;
+}
+
+/* Grid snapping helpers (for future drag functionality) */
+.grid-overlay::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: transparent;
+  pointer-events: none;
+}
+
+/* Grid patterns use dynamic colors from SVG - no CSS overrides needed */
