@@ -2,16 +2,73 @@ import { useEffect, useRef, useState, useImperativeHandle, forwardRef } from 're
 import GridOverlay from './GridOverlay'
 import './PreviewPane.css'
 
-const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElementSelect, onInspectorToggle, isInspectorEnabled, onSettingsToggle, gridOverlay, gridColor }, ref) => {
+// Helper function to format time ago
+const formatTimeAgo = (date) => {
+  if (!date) return '';
+  const now = new Date();
+  const diffInSeconds = Math.floor((now - date) / 1000);
+  
+  if (diffInSeconds < 60) return 'just now';
+  if (diffInSeconds < 3600) return `${Math.floor(diffInSeconds / 60)}m ago`;
+  if (diffInSeconds < 86400) return `${Math.floor(diffInSeconds / 3600)}h ago`;
+  return `${Math.floor(diffInSeconds / 86400)}d ago`;
+};
+
+const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElementSelect, onInspectorToggle, isInspectorEnabled, onSettingsToggle, gridOverlay, gridColor, isTextEditing, saveStatus, lastSaved, user, onAuthClick, onSaveClick, isAutoSaving, onFileSelect }, ref) => {
   const iframeRef = useRef(null)
   const [isInspecting, setIsInspecting] = useState(() => {
     console.log('PreviewPane: Initializing isInspecting state with isInspectorEnabled:', isInspectorEnabled)
     return isInspectorEnabled ?? true
   })
+  const [isLoading, setIsLoading] = useState(false)
+  const [hasError, setHasError] = useState(false)
+  const hasInitialLoadRef = useRef(false)
+  
+  // Show loading state only on initial project load
+  useEffect(() => {
+    if (!files || files.length === 0) {
+      // Reset flag when files are cleared (new project about to load)
+      hasInitialLoadRef.current = false;
+      setIsLoading(false); // Clear loading when files are cleared
+      return;
+    }
+    
+    if (files && files.length > 0 && !hasInitialLoadRef.current) {
+      console.log('Initial project load - showing loading state');
+      hasInitialLoadRef.current = true; // Mark as loaded
+      setIsLoading(true);
+      setHasError(false);
+      
+      // Clear loading state after 1 second (fallback in case iframe doesn't load)
+      const timeout = setTimeout(() => {
+        console.log('Initial load timeout (fallback) - clearing loading state');
+        setIsLoading(false);
+      }, 1000);
+      
+      return () => clearTimeout(timeout);
+    }
+  }, [files])
+
+  // Send text editing state to iframe
+  useEffect(() => {
+    if (iframeRef.current?.contentWindow) {
+      console.log('Sending text editing state to iframe:', isTextEditing);
+      iframeRef.current.contentWindow.postMessage({
+        type: 'SET_TEXT_EDITING_MODE',
+        isTextEditing: isTextEditing
+      }, '*');
+    }
+  }, [isTextEditing])
+
   const selectedElementRef = useRef(null)
   const scrollPositionRef = useRef({ x: 0, y: 0 })
   const currentInspectorStateRef = useRef(isInspecting)
   const currentParentInspectorStateRef = useRef(isInspectorEnabled)
+  const lastReloadTimeRef = useRef(0)
+  const reloadDebounceRef = useRef(null)
+  const wasAutoSavingRef = useRef(false) // Track previous auto-saving state
+  const lastNavigationTimeRef = useRef(0) // Throttle navigation
+  const navigationThrottleRef = useRef(null) // Navigation throttle timer
 
   // Keep refs updated with current state values
   useEffect(() => {
@@ -34,10 +91,23 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
   // Send inspector state to iframe when it changes
   useEffect(() => {
     if (iframeRef.current?.contentWindow) {
+      // Use requestAnimationFrame to ensure iframe is ready
+      const sendMessage = () => {
+        if (iframeRef.current?.contentWindow) {
       iframeRef.current.contentWindow.postMessage({
         type: 'SET_INSPECTOR_MODE',
         isInspecting: isInspecting
       }, '*');
+        }
+      };
+      
+      // Try immediately
+      sendMessage();
+      
+      // Also try after a short delay to ensure iframe processed previous messages
+      const timeout = setTimeout(sendMessage, 10);
+      
+      return () => clearTimeout(timeout);
     }
   }, [isInspecting]);
 
@@ -47,10 +117,25 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
       
       if (iframeRef.current?.contentWindow) {
         console.log('Sending UPDATE_STYLE message to iframe');
+        
+        // For childTextContent, format the value correctly
+        let messageValue = value;
+        if (property === 'childTextContent' && childElement) {
+          // Format as expected by iframe: { element: childInfo, newText }
+          messageValue = {
+            element: {
+              tagName: childElement.tagName || '',
+              className: childElement.className || '',
+              id: childElement.id || ''
+            },
+            newText: value
+          };
+        }
+        
         iframeRef.current.contentWindow.postMessage({
           type: 'UPDATE_STYLE',
           property: property,
-          value: value,
+          value: messageValue,
           childElement: childElement
         }, '*');
       } else {
@@ -61,6 +146,23 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
 
   useEffect(() => {
     if (!iframeRef.current || !files) return
+    
+    // Skip reload if auto-saving - preview already shows correct content via postMessage
+    if (isAutoSaving) {
+      console.log('Skipping iframe reload - auto-save in progress');
+      wasAutoSavingRef.current = true;
+      return;
+    }
+    
+    // If we were auto-saving and now we're not, skip this one reload (preview already has correct content)
+    if (wasAutoSavingRef.current && !isAutoSaving) {
+      console.log('Skipping iframe reload - just finished auto-save, preview already correct');
+      wasAutoSavingRef.current = false; // Reset after skipping once
+      return;
+    }
+    
+    // Normal reload - not during or after auto-save
+    wasAutoSavingRef.current = false;
 
     // Use selected HTML file if it's an HTML file, otherwise fall back to index.html or first HTML
     let htmlFile = null
@@ -86,8 +188,31 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
       jsFiles: jsFiles.map(f => f.name)
     })
 
-    // Build HTML with embedded CSS and JS
-    let htmlContent = htmlFile.content
+      // Build HTML with embedded CSS and JS
+      let htmlContent = htmlFile.content
+      
+      // Add performance and stability optimizations to HTML
+      const performanceOptimizations = `
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <style>
+          /* Critical CSS to prevent FOUC */
+          * { box-sizing: border-box; }
+          body { 
+            margin: 0; 
+            font-family: system-ui, -apple-system, sans-serif;
+            line-height: 1.5;
+            visibility: visible !important;
+            opacity: 1 !important;
+          }
+          /* Prevent layout shifts */
+          img { max-width: 100%; height: auto; }
+          /* Smooth transitions */
+          * { transition: none !important; }
+        </style>
+      `
+      
+      // Insert performance optimizations in head
+      htmlContent = htmlContent.replace('<head>', '<head>' + performanceOptimizations)
     
     // Get image files for processing
     const imageFiles = files.filter(f => f.isImage)
@@ -445,33 +570,159 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
           
           // Inspector mode state
           let inspectorEnabled = true;
-
-          document.addEventListener('click', function(e) {
-            // If inspector is disabled, handle navigation and prevent issues
-            if (!inspectorEnabled) {
-              // For links, we need to handle navigation within the iframe context
-              if (e.target.tagName === 'A' && e.target.href) {
-                e.preventDefault();
-                const href = e.target.getAttribute('href');
-                if (href && !href.startsWith('http') && !href.startsWith('//')) {
-                  // Internal navigation - notify parent to load the new page
-                  window.parent.postMessage({
-                    type: 'NAVIGATE_TO_PAGE',
-                    href: href
-                  }, '*');
-                }
-                return;
+          
+          // Flag to prevent navigation during text editing
+          let isTextEditing = ${isTextEditing || false};
+          
+          // Professional selection state management
+          let selectionState = {
+            isSelecting: false,           // Flag: new selection in progress
+            selectionTimestamp: 0,         // When current selection was made
+            lastSelectionId: null,        // ID of last selection
+            selectionLockTimeout: null     // Timeout to clear selection lock
+          };
+          
+          // Clear selection lock after a brief period (allows drift detection to resume)
+          function clearSelectionLock() {
+            if (selectionState.selectionLockTimeout) {
+              clearTimeout(selectionState.selectionLockTimeout);
+            }
+            selectionState.selectionLockTimeout = setTimeout(() => {
+              selectionState.isSelecting = false;
+            }, 200); // 200ms grace period for new selections
+          }
+          
+          // Navigation debounce to prevent rapid clicks
+          let navigationDebounceTimer = null;
+          let lastNavigationTime = 0;
+          
+          // Professional: Navigation handler - ALWAYS attached (works even when inspector is off)
+          // This handles link navigation regardless of inspector state
+          if (window.vibecanvasNavigationHandler) {
+            document.removeEventListener('click', window.vibecanvasNavigationHandler, true);
+          }
+          
+          window.vibecanvasNavigationHandler = function(e) {
+            // CRITICAL: Only handle navigation when inspector is OFF
+            // When inspector is ON, let the inspector handler deal with everything
+            if (inspectorEnabled) {
+              return; // Don't interfere
+            }
+            
+            // Check if this is a navigation link
+            let clickedElement = e.target;
+            let isNavigationLink = false;
+            let href = null;
+            
+            // Check if clicked element or its parent is a link
+            while (clickedElement && clickedElement !== document.body) {
+              if (clickedElement.tagName === 'A' && clickedElement.href) {
+                isNavigationLink = true;
+                href = clickedElement.getAttribute('href') || clickedElement.href;
+                break;
               }
               
-              // Block standalone image clicks to prevent white screen
-              if (e.target.tagName === 'IMG') {
+              // Check for images inside links
+              if (clickedElement.tagName === 'IMG' && clickedElement.parentElement && clickedElement.parentElement.tagName === 'A') {
+                isNavigationLink = true;
+                href = clickedElement.parentElement.getAttribute('href') || clickedElement.parentElement.href;
+                break;
+              }
+              
+              clickedElement = clickedElement.parentElement;
+            }
+            
+            // If it's a navigation link, handle it
+            if (isNavigationLink) {
+              // Block navigation during text editing
+              if (isTextEditing) {
                 e.preventDefault();
-                console.log('Standalone image clicked with inspector disabled - blocking action');
+                e.stopPropagation();
                 return false;
               }
               
-              return; // Let other clicks work normally
+              // Prevent default browser navigation
+              e.preventDefault();
+              e.stopPropagation();
+              
+              // Extract just the filename from the href
+              let normalizedHref = href;
+              if (href.includes('://')) {
+                try {
+                  const url = new URL(href);
+                  normalizedHref = url.pathname.split('/').pop() || url.pathname;
+                } catch (e) {
+                  normalizedHref = href.split('/').pop().split('?')[0];
+                }
+              } else {
+                normalizedHref = href.split('?')[0].split('#')[0];
+                if (normalizedHref.startsWith('/')) {
+                  normalizedHref = normalizedHref.substring(1);
+                }
+              }
+              
+              if (normalizedHref && normalizedHref !== '' && normalizedHref !== '#' && !normalizedHref.startsWith('http') && !normalizedHref.startsWith('//')) {
+                // Debounce navigation
+                const now = Date.now();
+                if (now - lastNavigationTime < 100) {
+                  return false;
+                }
+                
+                // Clear any pending navigation
+                if (navigationDebounceTimer) {
+                  clearTimeout(navigationDebounceTimer);
+                }
+                
+                lastNavigationTime = Date.now();
+                window.parent.postMessage({
+                  type: 'NAVIGATE_TO_PAGE',
+                  href: normalizedHref
+                }, '*');
+              }
+              return false;
             }
+            
+            // Not a navigation link - let it pass through
+            return;
+          };
+          
+          // Always attach navigation handler (works regardless of inspector state)
+          document.addEventListener('click', window.vibecanvasNavigationHandler, true);
+          
+          // Professional event listener management
+          // Remove old click listener if it exists (prevent duplicates)
+          if (window.vibecanvasClickHandler) {
+            document.removeEventListener('click', window.vibecanvasClickHandler, true);
+            window.vibecanvasClickHandler = null;
+          }
+          
+          // Function to attach/remove click handler based on inspector state
+          function manageClickHandler(shouldAttach) {
+            if (shouldAttach && !window.vibecanvasClickHandler) {
+              // Named click handler function
+              window.vibecanvasClickHandler = function(e) {
+                // Only handle clicks when inspector is enabled
+                if (!inspectorEnabled) {
+                  // Inspector is off - let navigation handler deal with links, don't interfere
+                  // Check if it's a navigation link - if so, let navigation handler deal with it
+                  let clickedElement = e.target;
+                  let isNavigationLink = false;
+                  while (clickedElement && clickedElement !== document.body) {
+                    if (clickedElement.tagName === 'A' && clickedElement.href) {
+                      isNavigationLink = true;
+                      break;
+                    }
+                    clickedElement = clickedElement.parentElement;
+                  }
+                  
+                  if (isNavigationLink) {
+                    // Let navigation handler deal with it
+                    return;
+                  }
+                  
+                  // Not a link, let it work normally
+                  return; // Don't prevent default, don't stop propagation
+                }
 
             e.preventDefault();
             e.stopPropagation();
@@ -544,16 +795,23 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
               }
             }
             
+            // Professional selection: Mark new selection in progress
+            selectionState.isSelecting = true;
+            selectionState.selectionTimestamp = Date.now();
+            const newSelectionId = 'selected-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
+            selectionState.lastSelectionId = newSelectionId;
+            
+            // Clear any pending lock timeout
+            clearSelectionLock();
+            
             selectedElement = targetElement;
             
             // Store a permanent reference to prevent it from changing
             window.currentSelectedElement = selectedElement;
             
-            // Create a unique identifier for this specific element to prevent confusion
-            if (!selectedElement.dataset.vibecanvasId) {
-              selectedElement.dataset.vibecanvasId = 'selected-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
-            }
-            window.currentSelectedElementId = selectedElement.dataset.vibecanvasId;
+            // Create a unique identifier for this specific element
+            selectedElement.dataset.vibecanvasId = newSelectionId;
+            window.currentSelectedElementId = newSelectionId;
             
             createHighlight();
             highlightElement(selectedElement);
@@ -608,11 +866,23 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
                 el.textContent?.trim().length > 0
               ).length + ' elements found');
             
-            window.parent.postMessage({
-              type: 'ELEMENT_SELECTED',
-              element: info
-            }, '*');
-          }, true);
+                window.parent.postMessage({
+                  type: 'ELEMENT_SELECTED',
+                  element: info
+                }, '*');
+              };
+              
+              // Attach the handler
+              document.addEventListener('click', window.vibecanvasClickHandler, true);
+            } else if (!shouldAttach && window.vibecanvasClickHandler) {
+              // Remove the handler when inspector is off
+              document.removeEventListener('click', window.vibecanvasClickHandler, true);
+              window.vibecanvasClickHandler = null;
+            }
+          }
+          
+          // Initially attach handler if inspector is enabled
+          manageClickHandler(inspectorEnabled);
           
           // Keep selected element highlighted - this is critical!
           function maintainSelection() {
@@ -674,17 +944,30 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
           function animateSelection() {
             const now = Date.now();
             if (now - lastMaintainTime > 50) { // More frequent checks after updates
-              // Use the stored reference to prevent element switching
-              if (window.currentSelectedElement && selectedElement !== window.currentSelectedElement) {
-                // Double-check using unique ID to prevent false positives
-                if (window.currentSelectedElementId && 
+              
+              // Professional drift detection: Only restore if NOT in the middle of a new selection
+              // and the selection is older than the grace period
+              if (!selectionState.isSelecting && 
+                  window.currentSelectedElement && 
+                  selectedElement !== window.currentSelectedElement) {
+                
+                // Check if this is actual drift (old selection) vs new selection
+                const timeSinceSelection = now - selectionState.selectionTimestamp;
+                const isOldSelection = timeSinceSelection > 300; // 300ms grace period
+                
+                // Only restore if:
+                // 1. We're not currently selecting
+                // 2. The selection is old (not a new one)
+                // 3. The IDs don't match (actual drift)
+                if (isOldSelection && 
+                    window.currentSelectedElementId && 
                     selectedElement.dataset.vibecanvasId !== window.currentSelectedElementId) {
                   console.warn('Selection drift detected! Restoring original selection.');
                   selectedElement = window.currentSelectedElement;
                 }
               }
               
-              // Also check if our selected element still exists in DOM
+              // Check if our selected element still exists in DOM
               if (selectedElement && !document.contains(selectedElement)) {
                 console.warn('Selected element removed from DOM! Trying to find replacement...');
                 // Try to find element by unique ID
@@ -762,7 +1045,10 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
           window.addEventListener('message', function(e) {
             console.log('Iframe received message:', e.data);
             
-            if (e.data.type === 'UPDATE_STYLE') {
+            if (e.data.type === 'SET_TEXT_EDITING_MODE') {
+              console.log('Setting text editing mode:', e.data.isTextEditing);
+              isTextEditing = e.data.isTextEditing;
+            } else if (e.data.type === 'UPDATE_STYLE') {
               // Use the currently selected element with unique ID verification
               let targetElement = selectedElement;
               
@@ -788,23 +1074,78 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
                 // Handle child text content updates
                 if (e.data.property === 'childTextContent') {
                   console.log('Updating child text content:', e.data.value);
-                  const { element: childInfo, newText } = e.data.value;
+                  
+                  // Handle both old format (string) and new format (object)
+                  let childInfo, newText;
+                  if (typeof e.data.value === 'string') {
+                    // Old format - try to use childElement from message
+                    if (e.data.childElement) {
+                      childInfo = {
+                        tagName: e.data.childElement.tagName || '',
+                        className: e.data.childElement.className || '',
+                        id: e.data.childElement.id || ''
+                      };
+                      newText = e.data.value;
+                    } else {
+                      console.warn('childTextContent value is string but no childElement provided');
+                      return;
+                    }
+                  } else if (e.data.value && typeof e.data.value === 'object') {
+                    // New format
+                    childInfo = e.data.value.element;
+                    newText = e.data.value.newText;
+                  } else {
+                    console.warn('Invalid childTextContent format:', e.data.value);
+                    return;
+                  }
                   
                   // Find the specific child element to update
-                  const childElement = Array.from(targetElement.querySelectorAll('*')).find(el => {
-                    return el.tagName === childInfo.tagName.toUpperCase() &&
-                           el.className === childInfo.className &&
-                           el.id === childInfo.id;
-                  });
+                  let childElement = null;
+                  
+                  // Try to find by ID first (most specific)
+                  if (childInfo.id) {
+                    childElement = targetElement.querySelector('#' + childInfo.id);
+                  }
+                  
+                  // If not found by ID, try by tag and class
+                  if (!childElement && childInfo.tagName && childInfo.className) {
+                    const candidates = Array.from(targetElement.querySelectorAll(childInfo.tagName));
+                    childElement = candidates.find(el => {
+                      return el.className === childInfo.className;
+                    });
+                  }
+                  
+                  // If still not found, try by tag only
+                  if (!childElement && childInfo.tagName) {
+                    const candidates = Array.from(targetElement.querySelectorAll(childInfo.tagName));
+                    // Try to find by matching text content or position
+                    childElement = candidates[0]; // Fallback to first match
+                  }
                   
                   if (childElement) {
-                    // Update only the direct text nodes, not nested elements
-                    Array.from(childElement.childNodes).forEach(node => {
-                      if (node.nodeType === Node.TEXT_NODE) {
-                        node.textContent = newText;
-                      }
+                    // Update the text content - replace all text nodes with the new text
+                    // First, remove all existing text nodes
+                    const textNodes = Array.from(childElement.childNodes).filter(
+                      node => node.nodeType === Node.TEXT_NODE
+                    );
+                    textNodes.forEach(node => node.remove());
+                    
+                    // Add the new text as a text node
+                    childElement.appendChild(document.createTextNode(newText));
+                    
+                    console.log('Updated child element text:', {
+                      tag: childElement.tagName,
+                      id: childElement.id,
+                      className: childElement.className,
+                      newText: newText
                     });
-                    console.log('Updated child element text:', childElement);
+                    
+                    // Re-establish selection to prevent freezing
+                    selectedElement = targetElement;
+                    window.currentSelectedElement = targetElement;
+                    highlightElement(targetElement);
+                  } else {
+                    console.warn('Could not find child element to update:', childInfo);
                   }
                   
                 } else if (e.data.property === 'placeholder') {
@@ -820,6 +1161,14 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
                   console.log('Target element after update:', targetElement.textContent);
                   
                   // CRITICAL: Re-establish selection after text change
+                  // Mark as selecting to prevent drift detection from interfering
+                  if (typeof selectionState !== 'undefined') {
+                    selectionState.isSelecting = true;
+                    selectionState.selectionTimestamp = Date.now();
+                    if (typeof clearSelectionLock === 'function') {
+                      clearSelectionLock();
+                    }
+                  }
                   selectedElement = targetElement;
                   window.currentSelectedElement = targetElement;
                   if (!targetElement.dataset.vibecanvasId) {
@@ -841,6 +1190,14 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
                   });
                   
                   // CRITICAL: Re-establish selection after style change
+                  // Mark as selecting to prevent drift detection from interfering
+                  if (typeof selectionState !== 'undefined') {
+                    selectionState.isSelecting = true;
+                    selectionState.selectionTimestamp = Date.now();
+                    if (typeof clearSelectionLock === 'function') {
+                      clearSelectionLock();
+                    }
+                  }
                   selectedElement = targetElement;
                   window.currentSelectedElement = targetElement;
                 }
@@ -867,14 +1224,54 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
               }
             } else if (e.data.type === 'SET_INSPECTOR_MODE') {
               console.log('Setting inspector mode:', e.data.isInspecting);
+              const wasEnabled = inspectorEnabled;
               inspectorEnabled = e.data.isInspecting;
               
-              // Hide/show highlight based on inspector mode
-              if (!inspectorEnabled && highlightDiv) {
+              // Professional: Manage click handler based on inspector state
+              if (typeof window.manageClickHandler === 'function') {
+                window.manageClickHandler(inspectorEnabled);
+              }
+              
+              // Clean up when disabling inspector
+              if (!inspectorEnabled && wasEnabled) {
+                console.log('Inspector disabled - cleaning up (inline script)');
+                
+                // Clear selection state machine (if it exists in this scope)
+                if (typeof selectionState !== 'undefined') {
+                  selectionState.isSelecting = false;
+                  selectionState.selectionTimestamp = 0;
+                  selectionState.lastSelectionId = null;
+                  if (selectionState.selectionLockTimeout) {
+                    clearTimeout(selectionState.selectionLockTimeout);
+                    selectionState.selectionLockTimeout = null;
+                  }
+                }
+                
+                // Hide and clean up highlight
+                if (highlightDiv) {
                 highlightDiv.style.display = 'none';
+                  highlightDiv.style.visibility = 'hidden';
+                  highlightDiv.style.opacity = '0';
+                }
+                
+                // Clear selection state
                 selectedElement = null;
                 window.currentSelectedElement = null;
                 window.currentSelectedElementId = null;
+                window.lastHighlightedElement = null;
+                
+                // Notify parent that selection is cleared
+                window.parent.postMessage({
+                  type: 'ELEMENT_SELECTED',
+                  element: null
+                }, '*');
+              } else if (inspectorEnabled && !wasEnabled) {
+                console.log('Inspector enabled - activating (inline script)');
+                // Reset selection state when enabling
+                if (typeof selectionState !== 'undefined') {
+                  selectionState.isSelecting = false;
+                  selectionState.selectionTimestamp = 0;
+                }
               }
               
             } else if (e.data.type === 'SELECT_ELEMENT') {
@@ -946,6 +1343,16 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
     }
     if (iframe) {
       iframe.dataset.blobUrl = url
+      
+      // Clear loading state when iframe loads (for initial load)
+      iframe.onload = () => {
+        console.log('Initial iframe loaded successfully - clearing loading state');
+        // Clear loading after minimum time to show skeleton
+        setTimeout(() => {
+          setIsLoading(false);
+        }, 500);
+      };
+      
       iframe.src = url
     }
 
@@ -958,18 +1365,52 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
         selectedElementRef.current = event.data.element
         onElementSelect(event.data.element)
       } else if (event.data.type === 'NAVIGATE_TO_PAGE') {
-        console.log('PreviewPane received navigation request:', event.data.href)
-        // Find the target HTML file
-        const targetFile = files.find(f => f.name === event.data.href || f.path === event.data.href || f.name.endsWith(event.data.href))
-        if (targetFile && targetFile.type === 'html') {
-          console.log('Found target file:', targetFile.name)
-          console.log('Current state during navigation - isInspecting:', currentInspectorStateRef.current, 'isInspectorEnabled:', currentParentInspectorStateRef.current)
-          // We need to trigger a re-render by updating the selectedFile in the parent
-          // For now, let's just reload the iframe with the new file
-          loadHTMLIntoIframe(targetFile)
-        } else {
-          console.warn('Could not find HTML file for navigation:', event.data.href)
+        // Throttle navigation to prevent overwhelming the system
+        const now = Date.now();
+        if (now - lastNavigationTimeRef.current < 500) {
+          return;
         }
+        
+        // Clear any pending navigation
+        if (navigationThrottleRef.current) {
+          clearTimeout(navigationThrottleRef.current);
+        }
+        
+        // Throttle navigation
+        navigationThrottleRef.current = setTimeout(() => {
+          lastNavigationTimeRef.current = Date.now();
+          
+          // Find the target HTML file - try multiple matching strategies
+          let targetFile = files.find(f => {
+            const fileName = f.name.toLowerCase();
+            const href = event.data.href.toLowerCase();
+            
+            // Exact match
+            if (fileName === href) return true;
+            
+            // Match without extension
+            if (fileName.replace('.html', '') === href.replace('.html', '')) return true;
+            
+            // Match if filename ends with href
+            if (fileName.endsWith(href) || href.endsWith(fileName)) return true;
+            
+            // Match if href is in filename or vice versa
+            if (fileName.includes(href) || href.includes(fileName)) return true;
+            
+            return false;
+          });
+        
+          if (targetFile && targetFile.type === 'html') {
+            // Reload the iframe with the new file
+            loadHTMLIntoIframe(targetFile);
+          } else {
+            console.warn('Could not find HTML file for navigation:', event.data.href, 'Available files:', files?.map(f => f.name) || 'NO FILES');
+            // Professional: Don't leave iframe in broken state - ensure loading state is cleared
+            setIsLoading(false);
+            setHasError(false);
+          }
+        }, 100); // 100ms throttle delay
+        return; // Exit early, navigation will happen in throttle
       } else if (event.data.type === 'REQUEST_INSPECTOR_STATE') {
         console.log('=== INSPECTOR STATE DEBUG ===')
         console.log('Local isInspecting:', currentInspectorStateRef.current)
@@ -990,6 +1431,22 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
 
     // Helper function to load HTML file into iframe
     const loadHTMLIntoIframe = (htmlFile) => {
+      if (!htmlFile) {
+        console.error('ERROR: htmlFile is null or undefined in loadHTMLIntoIframe');
+        setIsLoading(false);
+        setHasError(true);
+        return;
+      }
+      
+      // Professional: Set loading state and update parent file selection
+      setIsLoading(true);
+      setHasError(false);
+      
+      // Update parent component's selected file state
+      if (onFileSelect && htmlFile) {
+        onFileSelect(htmlFile);
+      }
+      
       const cssFiles = files.filter(f => f.type === 'css')
       const jsFiles = files.filter(f => f.type === 'js')
       const imageFiles = files.filter(f => ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg'].includes(f.type))
@@ -1093,6 +1550,27 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
             
             // Flag to completely disable inspector functionality
             let inspectorScriptActive = false;
+            
+            // Flag to prevent navigation during text editing
+            let isTextEditing = ${isTextEditing || false};
+            
+            // Professional selection state management (for inspector script)
+            let selectionState = {
+              isSelecting: false,           // Flag: new selection in progress
+              selectionTimestamp: 0,       // When current selection was made
+              lastSelectionId: null,       // ID of last selection
+              selectionLockTimeout: null   // Timeout to clear selection lock
+            };
+            
+            // Clear selection lock after a brief period
+            function clearSelectionLock() {
+              if (selectionState.selectionLockTimeout) {
+                clearTimeout(selectionState.selectionLockTimeout);
+              }
+              selectionState.selectionLockTimeout = setTimeout(() => {
+                selectionState.isSelecting = false;
+              }, 200); // 200ms grace period for new selections
+            }
 
             // Helper function to check if element is visually hidden
             function isElementHidden(el) {
@@ -1288,59 +1766,51 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
               }
             }
 
-            document.addEventListener('click', function(e) {
-              // If inspector is disabled, handle navigation properly
+            // Navigation debounce for inspector script
+            let inspectorNavigationDebounceTimer = null;
+            let inspectorLastNavigationTime = 0;
+            
+            // Remove old inspector click listener if it exists (prevent duplicates)
+            if (window.vibecanvasInspectorClickHandler) {
+              document.removeEventListener('click', window.vibecanvasInspectorClickHandler, true);
+              window.vibecanvasInspectorClickHandler = null;
+            }
+            
+            // Named click handler function for inspector script
+            // Professional: This handler ONLY runs when inspector is enabled
+            // When inspector is disabled, the handler is removed entirely
+            window.vibecanvasInspectorClickHandler = function(e) {
+              // CRITICAL: Safety check at the very beginning - if inspector is disabled, immediately return and remove handler
               if (!inspectorEnabled || !inspectorScriptActive) {
-                // Always prevent default first
-                e.preventDefault();
-                e.stopPropagation();
-                
-                // Handle all clickable elements that might cause navigation
-                let clickedElement = e.target;
-                let href = null;
-                
-                // Check if clicked element or its parents have navigation
-                while (clickedElement && clickedElement !== document.body) {
-                  // Check for direct link
-                  if (clickedElement.tagName === 'A' && clickedElement.href) {
-                    href = clickedElement.getAttribute('href');
-                    break;
-                  }
-                  
-                  // Check for images inside links (like logo images)
-                  if (clickedElement.tagName === 'IMG' && clickedElement.parentElement && clickedElement.parentElement.tagName === 'A') {
-                    href = clickedElement.parentElement.getAttribute('href');
-                    break;
-                  }
-                  
-                  // Check for standalone images - prevent any action
-                  if (clickedElement.tagName === 'IMG') {
-                    console.log('Standalone image clicked - blocking all actions');
-                    return false; // Block standalone image clicks completely
-                  }
-                  
-                  clickedElement = clickedElement.parentElement;
+                // Handler should be removed, but if it's still attached, remove it now and don't interfere
+                console.warn('Inspector click handler called but inspector is disabled - removing handler now');
+                // Remove the handler immediately if it's still attached
+                const handler = window.vibecanvasInspectorClickHandler;
+                if (handler) {
+                  document.removeEventListener('click', handler, true);
+                  window.vibecanvasInspectorClickHandler = null;
                 }
-                
-                // If we found a navigation target, handle it
-                if (href) {
-                  if (href && !href.startsWith('http') && !href.startsWith('//') && href !== '#' && href !== '') {
-                    // Internal navigation - notify parent to load the new page
-                    console.log('Navigation detected:', href);
-                    window.parent.postMessage({
-                      type: 'NAVIGATE_TO_PAGE',
-                      href: href
-                    }, '*');
-                  } else {
-                    console.log('Blocked navigation:', href);
-                  }
-                }
-                
-                return false;
+                return; // Don't prevent default, don't stop propagation - let everything work normally
               }
 
-              // Only run inspector functionality when both flags are true
-              if (!inspectorScriptActive) return;
+              // Inspector is enabled - handle element selection
+              // Remove the redundant check - we already know inspector is enabled from above
+              
+              // Allow element selection even during text editing (but prevent navigation)
+              if (isTextEditing) {
+                // Check if this is a navigation link - if so, block it
+                let clickedElement = e.target;
+                while (clickedElement && clickedElement !== document.body) {
+                  if (clickedElement.tagName === 'A' && clickedElement.href) {
+                    console.log('Preventing navigation - text editing is active');
+                    e.preventDefault();
+                    e.stopPropagation();
+                    return false;
+                  }
+                  clickedElement = clickedElement.parentElement;
+                }
+                // If not a link, allow element selection to proceed
+              }
               
               e.preventDefault();
               e.stopPropagation();
@@ -1381,20 +1851,27 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
                 if (parent) clickedElement = parent;
               }
 
-              if (!clickedElement.dataset.vibecanvasId) {
-                clickedElement.dataset.vibecanvasId = 'selected-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
-              }
-
+              // Professional selection: Mark new selection in progress
+              selectionState.isSelecting = true;
+              selectionState.selectionTimestamp = Date.now();
+              const newSelectionId = 'selected-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
+              selectionState.lastSelectionId = newSelectionId;
+              
+              // Clear any pending lock timeout
+              clearSelectionLock();
+              
+              clickedElement.dataset.vibecanvasId = newSelectionId;
               selectedElement = clickedElement;
               window.currentSelectedElement = selectedElement;
-              window.currentSelectedElementId = selectedElement.dataset.vibecanvasId;
+              window.currentSelectedElementId = newSelectionId;
 
               highlightElement(selectedElement);
               
-              // Only send selection to parent if inspector is enabled
-              if (inspectorEnabled) {
-                // Find child text elements for containers
-                const childTextElements = [];
+              // Send selection to parent (inspector is enabled at this point)
+              console.log('Element clicked in inspector mode:', selectedElement.tagName, selectedElement.className);
+              
+              // Find child text elements for containers
+              const childTextElements = [];
                 
                 // Get all descendant elements that contain text
                 const allElements = selectedElement.querySelectorAll('*');
@@ -1440,8 +1917,28 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
                     childTextElements: childTextElements
                   }
                 }, '*');
+            };
+            
+            // Professional: Only attach inspector click handler when inspector is enabled
+            if (inspectorEnabled && inspectorScriptActive) {
+              // Remove old handler if it exists
+              if (window.vibecanvasInspectorClickHandler) {
+                document.removeEventListener('click', window.vibecanvasInspectorClickHandler, true);
               }
-            }, true);
+              // Add the inspector click event listener ONLY if inspector is enabled
+              if (inspectorEnabled && inspectorScriptActive) {
+                document.addEventListener('click', window.vibecanvasInspectorClickHandler, true);
+                console.log('Attached inspector script click handler');
+              } else {
+                console.log('Not attaching inspector script click handler - inspector disabled');
+              }
+            } else {
+              // Inspector is disabled - ensure handler is removed
+              if (window.vibecanvasInspectorClickHandler) {
+                document.removeEventListener('click', window.vibecanvasInspectorClickHandler, true);
+                console.log('Removed inspector script click handler (inspector disabled)');
+              }
+            }
             
             document.addEventListener('mousemove', function(e) {
               // Completely skip all hover behavior when inspector is disabled
@@ -1482,21 +1979,50 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
               console.log('Iframe received message:', e.data);
               if (e.data.type === 'SET_INSPECTOR_MODE') {
                 console.log('Setting inspector mode:', e.data.isInspecting);
+                const wasEnabled = inspectorEnabled;
                 inspectorEnabled = e.data.isInspecting;
                 inspectorScriptActive = e.data.isInspecting;
                 
+                // Professional: Manage inspector script click handler immediately
                 if (!inspectorEnabled) {
-                  console.log('Inspector disabled - completely shutting down inspector script');
-                  // When inspector is disabled, completely clean up
+                  // Remove handler when inspector is off
+                  if (window.vibecanvasInspectorClickHandler) {
+                    document.removeEventListener('click', window.vibecanvasInspectorClickHandler, true);
+                    console.log('Removed inspector script click handler (inspector disabled)');
+                  }
+                } else if (inspectorEnabled && !wasEnabled) {
+                  // Inspector just enabled - handler will be attached when script runs
+                  console.log('Inspector enabled - handler will be attached');
+                }
+                
+                // Clean up when disabling inspector
+                if (!inspectorEnabled && wasEnabled) {
+                  console.log('Inspector disabled - cleaning up');
+                  
+                  // Hide and clean up highlight
                   if (highlightDiv) {
                     highlightDiv.style.display = 'none';
                     highlightDiv.style.visibility = 'hidden';
                     highlightDiv.style.opacity = '0';
                   }
+                  
+                  // Clear selection state
                   selectedElement = null;
                   window.currentSelectedElement = null;
                   window.currentSelectedElementId = null;
                   window.lastHighlightedElement = null;
+                  
+                  // Clear any pending animations
+                  if (animationFrameId) {
+                    cancelAnimationFrame(animationFrameId);
+                    animationFrameId = null;
+                  }
+                  
+                  // Clear hover timeout
+                  if (hoverTimeout) {
+                    clearTimeout(hoverTimeout);
+                    hoverTimeout = null;
+                  }
                   
                   // Notify parent that selection is cleared
                   window.parent.postMessage({
@@ -1504,10 +2030,13 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
                     element: null
                   }, '*');
                   
-                  console.log('Inspector disabled - all functionality stopped');
-                } else {
-                  console.log('Inspector enabled - activating inspector script');
+                  console.log('Inspector disabled - cleanup complete');
+                } else if (inspectorEnabled && !wasEnabled) {
+                  console.log('Inspector enabled - activating');
                 }
+              } else if (e.data.type === 'SET_TEXT_EDITING_MODE') {
+                console.log('Setting text editing mode:', e.data.isTextEditing);
+                isTextEditing = e.data.isTextEditing;
               }
             });
 
@@ -1523,27 +2052,90 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
       
       const iframe = iframeRef.current
       if (iframe) {
-        // Clean up previous blob URL
-        if (iframe.dataset.blobUrl) {
-          URL.revokeObjectURL(iframe.dataset.blobUrl)
+        // Professional: Store old URL to revoke AFTER new one loads
+        const oldBlobUrl = iframe.dataset.blobUrl;
+        
+        // Set new blob URL BEFORE revoking old one
+        iframe.dataset.blobUrl = url
+        
+        // Professional: Set loading state for navigation
+        setHasError(false)
+        
+        // Set new src FIRST (before revoking old URL)
+        // Clear any existing onload handlers to prevent conflicts
+        iframe.onload = null;
+        
+        // Set the new src
+        iframe.src = url;
+        
+        // NOW revoke old URL (after new src is set, with delay to ensure new URL starts loading)
+        if (oldBlobUrl) {
+          setTimeout(() => {
+            try {
+              URL.revokeObjectURL(oldBlobUrl);
+            } catch (e) {
+              console.warn('Error revoking old blob URL:', e);
+            }
+          }, 1000); // Increased delay to ensure new URL has fully loaded
         }
         
-        iframe.dataset.blobUrl = url
-        iframe.src = url
-        
         // Re-send inspector state after iframe loads
-        iframe.onload = () => {
+        const handleNavigationLoad = () => {
+          // Clear the timeout since we loaded successfully
+          if (iframe.dataset.loadTimeout) {
+            clearTimeout(parseInt(iframe.dataset.loadTimeout));
+            delete iframe.dataset.loadTimeout;
+          }
+          
+          // Clear loading state after successful load
+          setIsLoading(false);
+          
           setTimeout(() => {
             if (iframe.contentWindow) {
               const stateToSend = currentParentInspectorStateRef.current !== undefined ? currentParentInspectorStateRef.current : currentInspectorStateRef.current
-              console.log('Re-sending inspector state after navigation:', stateToSend, '(local:', currentInspectorStateRef.current, 'parent:', currentParentInspectorStateRef.current, ')')
               iframe.contentWindow.postMessage({
                 type: 'SET_INSPECTOR_MODE',
                 isInspecting: stateToSend
               }, '*');
             }
           }, 100); // Small delay to ensure iframe is ready
+        };
+        
+        // Set onload handler
+        iframe.onload = handleNavigationLoad;
+        
+        // If iframe is already loaded (same URL or cached), trigger handler manually
+        try {
+          const docReady = iframe.contentDocument?.readyState;
+          const winDocReady = iframe.contentWindow?.document?.readyState;
+          
+          if (docReady === 'complete' || winDocReady === 'complete') {
+            setTimeout(handleNavigationLoad, 50);
+          }
+        } catch (e) {
+          // Will wait for onload event
         }
+        
+        // Handle loading errors
+        iframe.onerror = (error) => {
+          console.error('Iframe loading error:', error);
+          // Clear timeout on error
+          if (iframe.dataset.loadTimeout) {
+            clearTimeout(parseInt(iframe.dataset.loadTimeout));
+            delete iframe.dataset.loadTimeout;
+          }
+          setIsLoading(false)
+          setHasError(true)
+        }
+        
+        // Fallback: Clear loading state after timeout (in case onload doesn't fire)
+        const loadTimeout = setTimeout(() => {
+          console.warn('Iframe load timeout - clearing loading state');
+          setIsLoading(false);
+        }, 3000); // 3 second timeout
+        
+        // Store timeout ID to clear it if onload fires
+        iframe.dataset.loadTimeout = loadTimeout;
       }
     }
 
@@ -1599,13 +2191,23 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
     }
 
     return () => {
+      // Cleanup debounce timeout
+      if (reloadDebounceRef.current) {
+        clearTimeout(reloadDebounceRef.current)
+        reloadDebounceRef.current = null
+      }
+      // Cleanup navigation throttle
+      if (navigationThrottleRef.current) {
+        clearTimeout(navigationThrottleRef.current)
+        navigationThrottleRef.current = null
+      }
       window.removeEventListener('message', handleMessage)
       if (iframe && handleLoad) {
         iframe.removeEventListener('load', handleLoad)
       }
       URL.revokeObjectURL(url)
     }
-  }, [files, selectedFile])
+  }, [files, selectedFile, isAutoSaving])
 
   const sendStyleUpdate = (property, value) => {
     if (iframeRef.current?.contentWindow) {
@@ -1650,6 +2252,43 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
     <div className="preview-pane">
       <div className="preview-header">
         <h3>Preview</h3>
+        <div className="save-status-container">
+          {!user && (
+            <button onClick={onAuthClick} className="auth-button">
+              Sign in to save
+            </button>
+          )}
+          {user && saveStatus === 'saving' && (
+            <div className="save-indicator saving">
+              <div className="save-spinner"></div>
+              <span>Saving...</span>
+            </div>
+          )}
+          {user && saveStatus === 'unsaved' && (
+            <div className="save-indicator unsaved">
+              <div className="unsaved-dot"></div>
+              <span>Unsaved changes</span>
+              {onSaveClick && (
+                <button onClick={onSaveClick} className="save-button">
+                  Save now
+                </button>
+              )}
+            </div>
+          )}
+          {user && saveStatus === 'saved' && lastSaved && (
+            <div className="save-indicator saved">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <polyline points="20,6 9,17 4,12"></polyline>
+              </svg>
+              <span>Saved {formatTimeAgo(lastSaved)}</span>
+            </div>
+          )}
+          {user && saveStatus === 'saved' && !lastSaved && (
+            <div className="save-indicator saved">
+              <span>Ready</span>
+            </div>
+          )}
+        </div>
         <div className="inspector-controls">
           <label className="inspector-toggle">
             <input
@@ -1685,10 +2324,49 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
         </div>
       </div>
       <div className="preview-content">
+        {/* Loading Overlay */}
+        {isLoading && (
+          <div className="preview-loading-overlay">
+            <div className="loading-skeleton">
+              <div className="skeleton-header"></div>
+              <div className="skeleton-nav"></div>
+              <div className="skeleton-content">
+                <div className="skeleton-line"></div>
+                <div className="skeleton-line"></div>
+                <div className="skeleton-line short"></div>
+              </div>
+            </div>
+            <div className="loading-spinner">
+              <div className="spinner"></div>
+              <span>Loading preview...</span>
+            </div>
+          </div>
+        )}
+        
+        {/* Error State */}
+        {hasError && (
+          <div className="preview-error-overlay">
+            <div className="error-content">
+              <span className="error-icon">⚠️</span>
+              <h4>Preview Error</h4>
+              <p>There was an issue loading the preview. Please try refreshing.</p>
+              <button onClick={() => {
+                setHasError(false)
+                setIsLoading(true)
+                if (iframeRef.current) {
+                  iframeRef.current.src = iframeRef.current.src // Reload iframe
+                }
+              }}>
+                Retry
+              </button>
+            </div>
+          </div>
+        )}
+        
         <iframe
           ref={iframeRef}
           title="Preview"
-          className="preview-iframe"
+          className={`preview-iframe ${isLoading ? 'loading' : ''}`}
           sandbox="allow-scripts allow-same-origin allow-forms"
         />
         <GridOverlay 
