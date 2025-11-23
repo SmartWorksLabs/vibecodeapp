@@ -1,7 +1,10 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import FileUploader from './components/FileUploader'
 import PreviewPane from './components/PreviewPane'
 import TabPanel from './components/TabPanel'
+import AuthModal from './components/AuthModal'
+import { useAuth } from './contexts/AuthContext'
+import { saveProject, saveTextChanges } from './services/projectService'
 import './App.css'
 
 function App() {
@@ -18,13 +21,30 @@ function App() {
   const [gridOverlay, setGridOverlay] = useState('none') // none, small, medium, large, custom
   const [gridColor, setGridColor] = useState('blue') // blue, white, red, green, purple, orange
   const [pendingTextChanges, setPendingTextChanges] = useState(new Map())
+  const [isTextEditing, setIsTextEditing] = useState(false)
+  const [saveStatus, setSaveStatus] = useState('saved') // 'saved', 'saving', 'unsaved'
+  const [lastSaved, setLastSaved] = useState(null)
+  const [showAuthModal, setShowAuthModal] = useState(false)
+  const [currentProjectName, setCurrentProjectName] = useState(null)
+  const [currentProjectId, setCurrentProjectId] = useState(null)
+  const [isAutoSaving, setIsAutoSaving] = useState(false) // Flag to prevent iframe reload during auto-save
+  
+  const { user, loading: authLoading } = useAuth()
 
   // Debug state changes
   useEffect(() => {
     console.log('App.jsx: isInspectorEnabled state changed to:', isInspectorEnabled)
   }, [isInspectorEnabled])
 
-  // Apply pending text changes when project files change (like when loading a new project)
+  // Show auth modal if user tries to save without being logged in
+  useEffect(() => {
+    if (saveStatus === 'unsaved' && pendingTextChanges.size > 0 && !user && !authLoading) {
+      // Don't auto-show auth modal - let user decide when to authenticate
+      // The save will just fail silently until they log in
+    }
+  }, [saveStatus, pendingTextChanges.size, user, authLoading])
+
+  // Apply pending text changes only on unmount (not on file changes)
   useEffect(() => {
     return () => {
       // Cleanup: apply any pending changes when component unmounts
@@ -33,16 +53,42 @@ function App() {
         applyPendingTextChanges(true); // Force persist to file on unmount
       }
     };
-  }, [projectFiles])
+  }, []) // Empty deps - only run on unmount
   const [previewKey, setPreviewKey] = useState(0)
   const previewPaneRef = useRef(null)
+  const isInternalUpdateRef = useRef(false) // Track if update is from auto-save to prevent reload loop
 
-  const handleProjectLoad = (files) => {
+  const handleProjectLoad = async (files) => {
     setProjectFiles(files)
     // Auto-select index.html if available
     const indexHtml = files.find(f => f.name === 'index.html')
     if (indexHtml) {
       setSelectedFile(indexHtml)
+    }
+    
+    // Set default project name if not set
+    if (!currentProjectName) {
+      // Extract project name from first HTML file or use default
+      const firstHtml = files.find(f => f.name.endsWith('.html'))
+      const projectName = firstHtml ? firstHtml.name.replace('.html', '') : 'Untitled Project'
+      setCurrentProjectName(projectName)
+    }
+    
+    // If user is logged in, save project to cloud
+    if (user) {
+      try {
+        const filesForCloud = files.map(file => ({
+          name: file.name,
+          content: file.content,
+          type: file.type || file.name.split('.').pop(),
+        }))
+        const result = await saveProject(currentProjectName || 'Untitled Project', filesForCloud, user.id)
+        if (result && result.projectId) {
+          setCurrentProjectId(result.projectId)
+        }
+      } catch (error) {
+        console.error('Error saving project on load:', error)
+      }
     }
   }
 
@@ -69,6 +115,9 @@ function App() {
     // Text changes will persist in the preview and be saved when navigating away from the file
     console.log('Element switch - keeping text changes in preview only');
     
+    // Clear text editing state when switching elements
+    setIsTextEditing(false);
+    
     setSelectedElement(element)
     
     // Update inspector state ONLY if explicitly provided (not undefined)
@@ -80,19 +129,34 @@ function App() {
     console.log('=== END ELEMENT SELECT DEBUG ===')
   }
 
+  // Debounce ref for inspector toggle
+  const inspectorToggleDebounceRef = useRef(null)
+  
   // Separate handler for inspector toggle to avoid confusion
   const handleInspectorToggle = (newInspectorState) => {
     console.log('=== TOGGLE DEBUG ===')
     console.log('handleInspectorToggle called with:', newInspectorState)
     console.log('Current isInspectorEnabled state:', isInspectorEnabled)
-    console.log('About to call setIsInspectorEnabled with:', newInspectorState)
+    
+    // Clear any pending toggle
+    if (inspectorToggleDebounceRef.current) {
+      clearTimeout(inspectorToggleDebounceRef.current)
+    }
+    
+    // Debounce rapid toggles (50ms)
+    inspectorToggleDebounceRef.current = setTimeout(() => {
+      console.log('Applying inspector toggle:', newInspectorState)
     setIsInspectorEnabled(newInspectorState)
-    console.log('setIsInspectorEnabled called (state update is async)')
-    console.log('=== END TOGGLE DEBUG ===')
-    // Clear selection when turning off inspector
+      
+      // Clear selection and text editing when turning off inspector
     if (!newInspectorState) {
       setSelectedElement(null)
+        setIsTextEditing(false)
     }
+      
+      inspectorToggleDebounceRef.current = null
+      console.log('=== END TOGGLE DEBUG ===')
+    }, 50)
   }
 
   const handleSettingsToggle = () => {
@@ -135,6 +199,7 @@ function App() {
     if (property === 'textContent') {
       console.log('*** TEXT CONTENT UPDATE DETECTED ***');
       console.log('Updating text content:', value);
+      setIsTextEditing(true); // Mark that text editing is active
       updateHTMLTextContent(value);
       console.log('*** TEXT CONTENT UPDATE COMPLETE ***');
       return;
@@ -172,29 +237,11 @@ function App() {
         originalText: selectedElement.textContent
       })));
       console.log('Text change stored for persistence:', elementKey, newText);
+      
+      // Set unsaved status when changes are made
+      setSaveStatus('unsaved');
     }
     console.log('=== END UPDATE HTML TEXT CONTENT DEBUG ===');
-  }
-
-  const applyPendingTextChanges = (forcePersist = false) => {
-    console.log('=== APPLYING PENDING TEXT CHANGES ===');
-    console.log('Pending changes count:', pendingTextChanges.size);
-    console.log('Force persist to file:', forcePersist);
-    
-    if (forcePersist) {
-      // Only update files when explicitly requested (like on project save/export)
-      pendingTextChanges.forEach((change, elementKey) => {
-        console.log('Persisting change to file:', elementKey, change.newText);
-        updateHTMLFile(change.newText, change.element, change.fileName);
-      });
-    } else {
-      // Just clear the pending changes without file updates to avoid reload loop
-      console.log('Clearing pending changes without file persistence');
-    }
-    
-    // Clear pending changes after applying
-    setPendingTextChanges(new Map());
-    console.log('=== PENDING TEXT CHANGES APPLIED ===');
   }
 
   const updateHTMLFile = (newText, element = selectedElement, fileName = selectedFile?.name) => {
@@ -230,7 +277,7 @@ function App() {
       if (match) {
         htmlContent = htmlContent.replace(idRegex, `$1${newText}$3`);
         console.log('Updated HTML using ID selector');
-        handleFileUpdate(selectedFile.name, htmlContent);
+        handleFileUpdate(targetFile.name, htmlContent);
         return;
       }
     }
@@ -243,7 +290,7 @@ function App() {
       if (match) {
         htmlContent = htmlContent.replace(classRegex, `$1${newText}$3`);
         console.log('Updated HTML using class selector');
-        handleFileUpdate(selectedFile.name, htmlContent);
+        handleFileUpdate(targetFile.name, htmlContent);
         return;
       }
     }
@@ -262,6 +309,133 @@ function App() {
     }
 
     console.warn('Could not find element in HTML to update text content');
+  }
+
+  // Auto-save function that persists changes to cloud and files
+  const autoSave = useCallback(async () => {
+    if (pendingTextChanges.size === 0) return;
+    if (!user || !projectFiles) {
+      // If user is not logged in, just update local files
+      if (pendingTextChanges.size > 0 && projectFiles) {
+        pendingTextChanges.forEach((change) => {
+          updateHTMLFile(change.newText, change.element, change.fileName);
+        });
+        setPendingTextChanges(new Map());
+        setSaveStatus('saved');
+        setLastSaved(new Date());
+      }
+      return;
+    }
+    
+    console.log('=== AUTO-SAVE TRIGGERED ===');
+    console.log('Pending changes count:', pendingTextChanges.size);
+    setSaveStatus('saving');
+    setIsAutoSaving(true); // Prevent iframe reload during auto-save
+    
+    try {
+      let projectId = currentProjectId;
+      
+      // If project doesn't exist in cloud, create it
+      if (!projectId) {
+        const filesForCloud = projectFiles.map(file => ({
+          name: file.name,
+          content: file.content,
+          type: file.type || file.name.split('.').pop(),
+        }));
+        
+        const result = await saveProject(currentProjectName || 'Untitled Project', filesForCloud, user.id);
+        if (result && result.projectId) {
+          projectId = result.projectId;
+          setCurrentProjectId(projectId);
+        }
+      }
+      
+      // Save text changes to cloud if project exists
+      if (projectId) {
+        for (const [elementKey, change] of pendingTextChanges.entries()) {
+          const elementSelector = `${change.element.tagName}${change.element.id ? '#' + change.element.id : ''}${change.element.className ? '.' + change.element.className.split(' ')[0] : ''}`;
+          
+          // Save to Supabase text_changes table
+          await saveTextChanges(
+            projectId,
+            change.fileName,
+            elementSelector,
+            change.originalText || '',
+            change.newText,
+            user.id
+          );
+        }
+        
+        // Save all files to cloud project
+        const filesForCloud = projectFiles.map(file => ({
+          name: file.name,
+          content: file.content,
+          type: file.type || file.name.split('.').pop(),
+        }));
+        
+        await saveProject(currentProjectName || 'Untitled Project', filesForCloud, user.id);
+      }
+      
+      // Mark as internal update to prevent reload loop
+      isInternalUpdateRef.current = true;
+      
+      // Update local file content
+      pendingTextChanges.forEach((change) => {
+        updateHTMLFile(change.newText, change.element, change.fileName);
+      });
+      
+      // Clear internal update flag after a short delay
+      setTimeout(() => {
+        isInternalUpdateRef.current = false;
+      }, 100);
+      
+      // Clear pending changes after saving
+      setPendingTextChanges(new Map());
+      
+      // Clear text editing state after auto-save to prevent stuck state
+      setIsTextEditing(false);
+      
+      // Update save status
+      setSaveStatus('saved');
+      setLastSaved(new Date());
+      console.log('=== AUTO-SAVE COMPLETED ===');
+    } catch (error) {
+      console.error('Auto-save error:', error);
+      setSaveStatus('unsaved'); // Keep as unsaved on error
+      isInternalUpdateRef.current = false; // Reset flag on error
+    } finally {
+      // Always clear auto-saving flag
+      setIsAutoSaving(false);
+    }
+  }, [pendingTextChanges, user, currentProjectId, currentProjectName, projectFiles]);
+
+  // Auto-save after 2 seconds of inactivity
+  useEffect(() => {
+    if (saveStatus === 'unsaved' && pendingTextChanges.size > 0 && user) {
+      const autoSaveTimer = setTimeout(() => {
+        console.log('Auto-save timer triggered');
+        autoSave();
+      }, 2000); // 2 second delay
+      
+      return () => clearTimeout(autoSaveTimer);
+    }
+  }, [saveStatus, pendingTextChanges.size, user, autoSave]);
+
+  const applyPendingTextChanges = async (forcePersist = false) => {
+    console.log('=== APPLYING PENDING TEXT CHANGES ===');
+    console.log('Pending changes count:', pendingTextChanges.size);
+    console.log('Force persist to file:', forcePersist);
+    
+    if (forcePersist && pendingTextChanges.size > 0) {
+      // Trigger auto-save to cloud
+      await autoSave();
+    } else {
+      // Just clear the pending changes without file updates to avoid reload loop
+      console.log('Clearing pending changes without file persistence');
+      setPendingTextChanges(new Map());
+    }
+    
+    console.log('=== PENDING TEXT CHANGES APPLIED ===');
   }
 
   const updateCSSFile = (property, value) => {
@@ -334,6 +508,7 @@ function App() {
 
   return (
     <div className={`app font-size-${fontSize}`}>
+      {showAuthModal && <AuthModal onClose={() => setShowAuthModal(false)} />}
       
       {!projectFiles ? (
         <FileUploader onProjectLoad={handleProjectLoad} />
@@ -351,6 +526,14 @@ function App() {
               onSettingsToggle={handleSettingsToggle}
               gridOverlay={gridOverlay}
               gridColor={gridColor}
+              isTextEditing={isTextEditing}
+              saveStatus={saveStatus}
+              lastSaved={lastSaved}
+              user={user}
+              onAuthClick={() => setShowAuthModal(true)}
+              onSaveClick={autoSave}
+              isAutoSaving={isAutoSaving}
+              onFileSelect={handleFileSelect}
             />
           </div>
           
@@ -371,6 +554,7 @@ function App() {
               onGridOverlayChange={handleGridOverlayChange}
               gridColor={gridColor}
               onGridColorChange={handleGridColorChange}
+              onTextEditingChange={setIsTextEditing}
             />
           </aside>
         </div>

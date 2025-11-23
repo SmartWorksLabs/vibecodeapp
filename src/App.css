@@ -101,3 +101,68 @@
   width: calc(280px * var(--scale-factor));
 }
 
+/* Professional Layout Stability - Prevent CLS and FOUC */
+* {
+  box-sizing: border-box;
+}
+
+/* Prevent flash of unstyled content */
+.app {
+  visibility: visible;
+  opacity: 1;
+  transition: opacity 0.2s ease-in-out;
+}
+
+/* Reserve space for content to prevent layout shifts */
+.app-layout {
+  min-height: 100vh;
+  display: flex;
+  contain: layout style;
+}
+
+.preview-section {
+  flex: 1;
+  min-width: 0; /* Prevent flex item from overflowing */
+  contain: layout;
+}
+
+.right-panel {
+  flex-shrink: 0;
+  contain: layout;
+}
+
+/* Smooth transitions for layout changes */
+.preview-pane,
+.properties-panel,
+.tab-panel {
+  transition: all 0.2s ease-in-out;
+  will-change: transform;
+}
+
+/* Prevent content jumping during font loading */
+body {
+  font-display: swap;
+}
+
+/* Optimize rendering performance */
+.preview-iframe {
+  transform: translateZ(0); /* Force hardware acceleration */
+  backface-visibility: hidden;
+  perspective: 1000px;
+}
+
+/* Prevent layout shifts from images */
+img {
+  max-width: 100%;
+  height: auto;
+}
+
+/* Stabilize button and input dimensions */
+button,
+input,
+select,
+textarea {
+  min-height: 32px;
+  box-sizing: border-box;
+}
+

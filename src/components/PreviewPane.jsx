@@ -93,7 +93,7 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
     if (iframeRef.current?.contentWindow) {
       // Use requestAnimationFrame to ensure iframe is ready
       const sendMessage = () => {
-        if (iframeRef.current?.contentWindow) {
+    if (iframeRef.current?.contentWindow) {
       iframeRef.current.contentWindow.postMessage({
         type: 'SET_INSPECTOR_MODE',
         isInspecting: isInspecting
@@ -177,19 +177,53 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
       console.log('PreviewPane: Using fallback HTML file:', htmlFile?.name)
     }
     
-    if (!htmlFile) return
+    if (!htmlFile) {
+      console.warn('PreviewPane: No HTML file found')
+      return
+    }
+    
+    if (!htmlFile.content) {
+      console.error('PreviewPane: HTML file has no content:', htmlFile.name)
+      return
+    }
 
-    const cssFiles = files.filter(f => f.type === 'css')
-    const jsFiles = files.filter(f => f.type === 'js')
+    // Filter CSS files - check both type and file extension to be safe
+    const cssFiles = files.filter(f => {
+      const isCssType = f.type === 'css'
+      const isCssExtension = f.name.toLowerCase().endsWith('.css')
+      const matches = isCssType || isCssExtension
+      if (matches) {
+        console.log(`Found CSS file: ${f.name} (type: ${f.type}, extension check: ${isCssExtension})`)
+      }
+      return matches
+    })
+    
+    // Filter JS files - check both type and file extension to be safe
+    const jsFiles = files.filter(f => {
+      const isJsType = f.type === 'js'
+      const isJsExtension = f.name.toLowerCase().endsWith('.js')
+      return isJsType || isJsExtension
+    })
 
     console.log('PreviewPane: Processing files', {
       htmlFile: htmlFile.name,
-      cssFiles: cssFiles.map(f => ({ name: f.name, contentLength: f.content?.length })),
+      totalFiles: files.length,
+      allFileTypes: files.map(f => ({ name: f.name, type: f.type })),
+      cssFiles: cssFiles.map(f => ({ name: f.name, type: f.type, contentLength: f.content?.length, hasContent: !!f.content })),
       jsFiles: jsFiles.map(f => f.name)
     })
 
       // Build HTML with embedded CSS and JS
       let htmlContent = htmlFile.content
+      
+      if (!htmlContent || typeof htmlContent !== 'string') {
+        console.error('PreviewPane: HTML content is invalid:', {
+          hasContent: !!htmlContent,
+          contentType: typeof htmlContent,
+          fileName: htmlFile.name
+        })
+        return
+      }
       
       // Add performance and stability optimizations to HTML
       const performanceOptimizations = `
@@ -251,38 +285,63 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
     // Inject ALL CSS files as inline <style> tags
     // This ensures all CSS is always loaded, regardless of link tag matching
     if (cssFiles.length > 0) {
+      console.log(`✅ Found ${cssFiles.length} CSS file(s) to inject:`, cssFiles.map(f => ({ 
+        name: f.name, 
+        type: f.type, 
+        hasContent: !!f.content,
+        contentType: typeof f.content,
+        contentLength: f.content?.length 
+      })))
+      
       const cssTagsToInject = cssFiles
         .filter(cssFile => {
-          const hasContent = cssFile.content && cssFile.content.trim()
+          const hasContent = cssFile.content && typeof cssFile.content === 'string' && cssFile.content.trim().length > 0
           if (!hasContent) {
-            console.warn(`CSS file ${cssFile.name} has no content`)
+            console.error(`❌ CSS file ${cssFile.name} has no valid content:`, {
+              hasContent: !!cssFile.content,
+              contentType: typeof cssFile.content,
+              contentLength: cssFile.content?.length
+            })
           }
           return hasContent
         })
         .map(cssFile => {
-          console.log(`Injecting CSS from ${cssFile.name} (${cssFile.content.length} chars)`)
-          return `<style id="injected-${cssFile.name}">${cssFile.content}</style>`
+          const contentLength = cssFile.content ? cssFile.content.length : 0
+          console.log(`✅ Injecting CSS from ${cssFile.name} (${contentLength} chars)`)
+          const safeId = cssFile.name.replace(/[^a-zA-Z0-9]/g, '-')
+          return `<style id="injected-${safeId}">${cssFile.content}</style>`
         })
         .join('\n')
       
-      console.log(`Injecting ${cssFiles.length} CSS file(s) into HTML`)
+      if (cssTagsToInject) {
+        const injectedCount = cssFiles.filter(f => f.content && typeof f.content === 'string' && f.content.trim()).length
+        console.log(`✅ Injecting ${injectedCount} CSS file(s) into HTML`)
       
       // Inject CSS at the start of <head> for proper cascade order
       if (htmlContent.includes('<head>')) {
         // Insert right after <head> tag (only first occurrence)
         htmlContent = htmlContent.replace(/<head>/i, `<head>\n${cssTagsToInject}\n`)
+          console.log('✅ CSS injected after <head> tag')
       } else if (htmlContent.includes('</head>')) {
         // Insert before </head> if <head> tag exists but we can't find opening
         htmlContent = htmlContent.replace(/<\/head>/i, `${cssTagsToInject}\n</head>`)
+          console.log('✅ CSS injected before </head> tag')
       } else if (htmlContent.includes('<body>')) {
         // Fallback: inject before body
         htmlContent = htmlContent.replace(/<body>/i, `${cssTagsToInject}\n<body>`)
+          console.log('✅ CSS injected before <body> tag')
       } else {
         // Last resort: prepend to document
         htmlContent = `${cssTagsToInject}\n${htmlContent}`
+          console.log('✅ CSS prepended to document')
       }
     } else {
-      console.warn('No CSS files found to inject')
+        console.error('❌ No valid CSS content to inject - all CSS files were empty or invalid')
+      }
+    } else {
+      console.error('❌ No CSS files found to inject.')
+      console.error('Available files:', files.map(f => ({ name: f.name, type: f.type })))
+      console.error('💡 TIP: When opening individual files, make sure to select BOTH your HTML file AND CSS file(s) together.')
     }
 
     // Replace <script src> tags for JS files with inline <script> tags
@@ -609,79 +668,79 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
               return; // Don't interfere
             }
             
-            // Check if this is a navigation link
-            let clickedElement = e.target;
-            let isNavigationLink = false;
-            let href = null;
-            
-            // Check if clicked element or its parent is a link
-            while (clickedElement && clickedElement !== document.body) {
-              if (clickedElement.tagName === 'A' && clickedElement.href) {
-                isNavigationLink = true;
-                href = clickedElement.getAttribute('href') || clickedElement.href;
-                break;
+              // Check if this is a navigation link
+              let clickedElement = e.target;
+              let isNavigationLink = false;
+              let href = null;
+              
+              // Check if clicked element or its parent is a link
+              while (clickedElement && clickedElement !== document.body) {
+                if (clickedElement.tagName === 'A' && clickedElement.href) {
+                  isNavigationLink = true;
+                  href = clickedElement.getAttribute('href') || clickedElement.href;
+                  break;
+                }
+                
+                // Check for images inside links
+                if (clickedElement.tagName === 'IMG' && clickedElement.parentElement && clickedElement.parentElement.tagName === 'A') {
+                  isNavigationLink = true;
+                  href = clickedElement.parentElement.getAttribute('href') || clickedElement.parentElement.href;
+                  break;
+                }
+                
+                clickedElement = clickedElement.parentElement;
               }
               
-              // Check for images inside links
-              if (clickedElement.tagName === 'IMG' && clickedElement.parentElement && clickedElement.parentElement.tagName === 'A') {
-                isNavigationLink = true;
-                href = clickedElement.parentElement.getAttribute('href') || clickedElement.parentElement.href;
-                break;
-              }
-              
-              clickedElement = clickedElement.parentElement;
-            }
-            
             // If it's a navigation link, handle it
-            if (isNavigationLink) {
-              // Block navigation during text editing
-              if (isTextEditing) {
-                e.preventDefault();
-                e.stopPropagation();
-                return false;
-              }
-              
-              // Prevent default browser navigation
-              e.preventDefault();
-              e.stopPropagation();
-              
-              // Extract just the filename from the href
-              let normalizedHref = href;
-              if (href.includes('://')) {
-                try {
-                  const url = new URL(href);
-                  normalizedHref = url.pathname.split('/').pop() || url.pathname;
-                } catch (e) {
-                  normalizedHref = href.split('/').pop().split('?')[0];
-                }
-              } else {
-                normalizedHref = href.split('?')[0].split('#')[0];
-                if (normalizedHref.startsWith('/')) {
-                  normalizedHref = normalizedHref.substring(1);
-                }
-              }
-              
-              if (normalizedHref && normalizedHref !== '' && normalizedHref !== '#' && !normalizedHref.startsWith('http') && !normalizedHref.startsWith('//')) {
-                // Debounce navigation
-                const now = Date.now();
-                if (now - lastNavigationTime < 100) {
+              if (isNavigationLink) {
+                // Block navigation during text editing
+                if (isTextEditing) {
+                  e.preventDefault();
+                  e.stopPropagation();
                   return false;
                 }
                 
-                // Clear any pending navigation
-                if (navigationDebounceTimer) {
-                  clearTimeout(navigationDebounceTimer);
+              // Prevent default browser navigation
+                e.preventDefault();
+                e.stopPropagation();
+                
+                // Extract just the filename from the href
+              let normalizedHref = href;
+                if (href.includes('://')) {
+                  try {
+                    const url = new URL(href);
+                  normalizedHref = url.pathname.split('/').pop() || url.pathname;
+                  } catch (e) {
+                  normalizedHref = href.split('/').pop().split('?')[0];
+                  }
+                } else {
+                normalizedHref = href.split('?')[0].split('#')[0];
+                if (normalizedHref.startsWith('/')) {
+                  normalizedHref = normalizedHref.substring(1);
+                  }
                 }
                 
-                lastNavigationTime = Date.now();
-                window.parent.postMessage({
-                  type: 'NAVIGATE_TO_PAGE',
+              if (normalizedHref && normalizedHref !== '' && normalizedHref !== '#' && !normalizedHref.startsWith('http') && !normalizedHref.startsWith('//')) {
+                // Debounce navigation
+                  const now = Date.now();
+                if (now - lastNavigationTime < 100) {
+                    return false;
+                  }
+                  
+                  // Clear any pending navigation
+                  if (navigationDebounceTimer) {
+                    clearTimeout(navigationDebounceTimer);
+                  }
+                  
+                    lastNavigationTime = Date.now();
+                    window.parent.postMessage({
+                      type: 'NAVIGATE_TO_PAGE',
                   href: normalizedHref
-                }, '*');
+                    }, '*');
+                }
+                return false;
               }
-              return false;
-            }
-            
+              
             // Not a navigation link - let it pass through
             return;
           };
@@ -722,7 +781,7 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
                   
                   // Not a link, let it work normally
                   return; // Don't prevent default, don't stop propagation
-                }
+            }
 
             e.preventDefault();
             e.stopPropagation();
@@ -866,14 +925,14 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
                 el.textContent?.trim().length > 0
               ).length + ' elements found');
             
-                window.parent.postMessage({
-                  type: 'ELEMENT_SELECTED',
-                  element: info
-                }, '*');
-              };
-              
+            window.parent.postMessage({
+              type: 'ELEMENT_SELECTED',
+              element: info
+            }, '*');
+          };
+          
               // Attach the handler
-              document.addEventListener('click', window.vibecanvasClickHandler, true);
+          document.addEventListener('click', window.vibecanvasClickHandler, true);
             } else if (!shouldAttach && window.vibecanvasClickHandler) {
               // Remove the handler when inspector is off
               document.removeEventListener('click', window.vibecanvasClickHandler, true);
@@ -1447,8 +1506,19 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
         onFileSelect(htmlFile);
       }
       
-      const cssFiles = files.filter(f => f.type === 'css')
-      const jsFiles = files.filter(f => f.type === 'js')
+      // Filter CSS files - check both type and file extension to be safe
+      const cssFiles = files.filter(f => {
+        const isCssType = f.type === 'css'
+        const isCssExtension = f.name.toLowerCase().endsWith('.css')
+        return isCssType || isCssExtension
+      })
+      
+      // Filter JS files - check both type and file extension to be safe
+      const jsFiles = files.filter(f => {
+        const isJsType = f.type === 'js'
+        const isJsExtension = f.name.toLowerCase().endsWith('.js')
+        return isJsType || isJsExtension
+      })
       const imageFiles = files.filter(f => ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg'].includes(f.type))
 
       console.log('PreviewPane: Processing files', {
@@ -1485,14 +1555,34 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
 
       // Inject CSS files as inline styles
       if (cssFiles.length > 0) {
-        const cssContent = cssFiles.map(file => `/* ${file.name} */\n${file.content}`).join('\n\n')
+        console.log(`Found ${cssFiles.length} CSS file(s) for navigation:`, cssFiles.map(f => f.name))
+        
+        const validCssFiles = cssFiles.filter(file => {
+          const hasContent = file.content && typeof file.content === 'string' && file.content.trim().length > 0
+          if (!hasContent) {
+            console.warn(`CSS file ${file.name} has no content for navigation injection`)
+          }
+          return hasContent
+        })
+        
+        if (validCssFiles.length > 0) {
+          const cssContent = validCssFiles.map(file => `/* ${file.name} */\n${file.content}`).join('\n\n')
         const cssTag = `<style>\n${cssContent}\n</style>`
         
         if (htmlContent.includes('</head>')) {
           htmlContent = htmlContent.replace('</head>', `${cssTag}\n</head>`)
+          } else if (htmlContent.includes('<head>')) {
+            htmlContent = htmlContent.replace('<head>', `<head>\n${cssTag}`)
         } else {
           htmlContent = `<head>${cssTag}</head>\n${htmlContent}`
         }
+          
+          console.log(`Injected ${validCssFiles.length} CSS file(s) for navigation`)
+        } else {
+          console.warn('No valid CSS content to inject for navigation')
+        }
+      } else {
+        console.warn('No CSS files found for navigation. Available files:', files.map(f => ({ name: f.name, type: f.type })))
       }
 
       // Inject JS files as inline scripts
@@ -1789,7 +1879,7 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
                 if (handler) {
                   document.removeEventListener('click', handler, true);
                   window.vibecanvasInspectorClickHandler = null;
-                }
+                  }
                 return; // Don't prevent default, don't stop propagation - let everything work normally
               }
 
@@ -1927,7 +2017,7 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
               }
               // Add the inspector click event listener ONLY if inspector is enabled
               if (inspectorEnabled && inspectorScriptActive) {
-                document.addEventListener('click', window.vibecanvasInspectorClickHandler, true);
+            document.addEventListener('click', window.vibecanvasInspectorClickHandler, true);
                 console.log('Attached inspector script click handler');
               } else {
                 console.log('Not attaching inspector script click handler - inspector disabled');

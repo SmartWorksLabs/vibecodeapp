@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import './PropertiesPanel.css'
 
-function PropertiesPanel({ element, onPropertyChange, isInspectorEnabled }) {
+function PropertiesPanel({ element, onPropertyChange, isInspectorEnabled, onTextEditingChange }) {
   const [properties, setProperties] = useState({
     textContent: '',
     placeholder: '',
@@ -59,24 +59,24 @@ function PropertiesPanel({ element, onPropertyChange, isInspectorEnabled }) {
             const isDuplicate = textElements.some(existing => 
               existing.textContent.includes(textContent) || textContent.includes(existing.textContent)
             );
-            
+          
             if (!isDuplicate) {
               console.log(`Found text element ${index + 1}: ${el.tagName} - "${textContent.substring(0, 50)}..."`);
-              textElements.push({
-                element: el,
+            textElements.push({
+              element: el,
                 text: textContent,
                 textContent: textContent,
-                tagName: el.tagName,
-                className: el.className || '',
+              tagName: el.tagName,
+              className: el.className || '',
                 id: el.id || ''
               });
             } else {
               console.log(`Skipping duplicate text element: ${el.tagName} - "${textContent.substring(0, 30)}..."`);
-            }
+          }
           }
         }
       });
-    };
+      };
     
     try {
       findAllTextElements(element);
@@ -240,6 +240,11 @@ function PropertiesPanel({ element, onPropertyChange, isInspectorEnabled }) {
 
   // Live text content update (short debounce for real-time feel)
   const updateTextContentLive = useCallback((value) => {
+    // Set text editing state to true when starting to type
+    if (onTextEditingChange) {
+      onTextEditingChange(true);
+    }
+    
     if (liveUpdateTimeoutRef.current) {
       clearTimeout(liveUpdateTimeoutRef.current);
     }
@@ -256,12 +261,17 @@ function PropertiesPanel({ element, onPropertyChange, isInspectorEnabled }) {
       setProperties(prev => ({ ...prev, textContent: value }));
       console.log('=== END LIVE TEXT UPDATE DEBUG ===');
     }, 150); // 150ms for real-time feel
-  }, [onPropertyChange]);
+  }, [onPropertyChange, onTextEditingChange]);
 
   // Final text content update (immediate on blur/enter)
   const updateTextContentFinal = useCallback((value) => {
     if (liveUpdateTimeoutRef.current) {
       clearTimeout(liveUpdateTimeoutRef.current);
+    }
+    
+    // Set text editing state to false when done editing
+    if (onTextEditingChange) {
+      onTextEditingChange(false);
     }
     
     console.log('=== FINAL TEXT UPDATE DEBUG ===');
@@ -277,12 +287,17 @@ function PropertiesPanel({ element, onPropertyChange, isInspectorEnabled }) {
     }
     setProperties(prev => ({ ...prev, textContent: value }));
     console.log('=== END FINAL TEXT UPDATE DEBUG ===');
-  }, [onPropertyChange, element]);
-
+  }, [onPropertyChange, element, onTextEditingChange]);
+    
   // Handle child text element updates
-  const handleChildTextChange = useCallback((childElement, newText) => {
+  const handleChildTextChange = useCallback((childElement, newText, isFinal = false) => {
     console.log('=== CHILD TEXT UPDATE DEBUG ===');
-    console.log('Updating child text:', childElement, 'to:', newText);
+    console.log('Updating child text:', childElement, 'to:', newText, 'isFinal:', isFinal);
+    
+    // Set text editing state
+    if (onTextEditingChange) {
+      onTextEditingChange(!isFinal);
+    }
     
     if (onPropertyChange) {
       // Update the specific child element
@@ -290,7 +305,7 @@ function PropertiesPanel({ element, onPropertyChange, isInspectorEnabled }) {
     }
     
     console.log('=== END CHILD TEXT UPDATE DEBUG ===');
-  }, [onPropertyChange]);
+  }, [onPropertyChange, onTextEditingChange]);
 
   const handlePropertyChange = (prop, value) => {
     console.log('PropertiesPanel.handlePropertyChange:', { prop, value });
@@ -463,9 +478,9 @@ function PropertiesPanel({ element, onPropertyChange, isInspectorEnabled }) {
             <label className="property-label">Text Elements ({childTextElements.length})</label>
             {childTextElements.map((childEl, index) => (
               <div key={index} className="child-text-group">
-                <label className="child-text-label">
+                  <label className="child-text-label">
                   {getFriendlyElementName(childEl)}
-                </label>
+                  </label>
                 <textarea
                   value={childEl.textContent}
                   onChange={(e) => {
@@ -474,8 +489,8 @@ function PropertiesPanel({ element, onPropertyChange, isInspectorEnabled }) {
                     updatedChildren[index] = { ...childEl, textContent: e.target.value };
                     setChildTextElements(updatedChildren);
                     
-                    // Live updates for child text elements
-                    updateTextContentLive(e.target.value);
+                    // Live updates for child text elements - use handleChildTextChange (not final)
+                    handleChildTextChange(childEl, e.target.value, false);
                     
                     // Auto-resize textarea with max height
                     e.target.style.height = 'auto';
@@ -483,11 +498,11 @@ function PropertiesPanel({ element, onPropertyChange, isInspectorEnabled }) {
                   }}
                   onBlur={(e) => {
                     // Final update on blur for child text elements
-                    updateTextContentFinal(e.target.value);
+                    handleChildTextChange(childEl, e.target.value, true);
                   }}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && e.ctrlKey) {
-                      updateTextContentFinal(e.target.value); // Ctrl+Enter for immediate update
+                      handleChildTextChange(childEl, e.target.value, true); // Ctrl+Enter for immediate update
                     }
                   }}
                   className="property-input property-textarea child-text-input"
@@ -498,13 +513,13 @@ function PropertiesPanel({ element, onPropertyChange, isInspectorEnabled }) {
                     minHeight: 'var(--font-md)',
                     lineHeight: '1.4'
                   }}
-                />
-              </div>
-            ))}
+                  />
+                </div>
+              ))}
           </div>
         ) : (
-          <div className="property-group">
-            <label className="property-label">Text Content</label>
+            <div className="property-group">
+              <label className="property-label">Text Content</label>
             <textarea
               value={localTextContent}
               onChange={(e) => {
@@ -530,25 +545,25 @@ function PropertiesPanel({ element, onPropertyChange, isInspectorEnabled }) {
                 minHeight: 'var(--font-md)',
                 lineHeight: '1.4'
               }}
-            />
-          </div>
+              />
+            </div>
         )}
-        
-        {/* Show placeholder field for input elements */}
-        {element && (element.tagName === 'input' || element.tagName === 'textarea') && (
-          <div className="property-group">
-            <label className="property-label">Placeholder Text</label>
-            <input
-              type="text"
+            
+            {/* Show placeholder field for input elements */}
+            {element && (element.tagName === 'input' || element.tagName === 'textarea') && (
+              <div className="property-group">
+                <label className="property-label">Placeholder Text</label>
+                <input
+                  type="text"
               value={localPlaceholder}
               onChange={(e) => {
                 setLocalPlaceholder(e.target.value);
                 handlePropertyChange('placeholder', e.target.value);
               }}
-              className="property-input"
-              placeholder="Enter placeholder text"
-            />
-          </div>
+                  className="property-input"
+                  placeholder="Enter placeholder text"
+                />
+              </div>
         )}
 
         <div className="property-group">
