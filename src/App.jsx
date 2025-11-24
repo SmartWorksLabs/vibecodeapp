@@ -3,6 +3,7 @@ import FileUploader from './components/FileUploader'
 import PreviewPane from './components/PreviewPane'
 import TabPanel from './components/TabPanel'
 import AuthModal from './components/AuthModal'
+import MenuBar from './components/MenuBar'
 import { useAuth } from './contexts/AuthContext'
 import { saveProject, saveTextChanges } from './services/projectService'
 import './App.css'
@@ -131,7 +132,7 @@ function App() {
 
   // Debounce ref for inspector toggle
   const inspectorToggleDebounceRef = useRef(null)
-  
+
   // Separate handler for inspector toggle to avoid confusion
   const handleInspectorToggle = (newInspectorState) => {
     console.log('=== TOGGLE DEBUG ===')
@@ -513,6 +514,17 @@ function App() {
       {!projectFiles ? (
         <FileUploader onProjectLoad={handleProjectLoad} />
       ) : (
+        <>
+          <MenuBar 
+            saveStatus={saveStatus}
+            lastSaved={lastSaved}
+            user={user}
+            onAuthClick={() => setShowAuthModal(true)}
+            onSaveClick={autoSave}
+            isInspectorEnabled={isInspectorEnabled}
+            onInspectorToggle={handleInspectorToggle}
+            onSettingsToggle={handleSettingsToggle}
+          />
         <div className="app-layout">
           <div className="preview-section">
             <PreviewPane 
@@ -558,6 +570,7 @@ function App() {
             />
           </aside>
         </div>
+        </>
       )}
     </div>
   )

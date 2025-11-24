@@ -38,7 +38,7 @@ function FileUploader({ onProjectLoad }) {
     return () => window.removeEventListener('keydown', handleKeyPress)
   }, [])
 
-  const saveToRecentProjects = (projectName, files) => {
+  const saveToRecentProjects = (projectName, files, isFolder = true) => {
     // Check if files have content before saving
     const filesWithContent = files.filter(f => f.content !== undefined && f.content !== null)
     
@@ -51,6 +51,7 @@ function FileUploader({ onProjectLoad }) {
       name: projectName || 'Untitled Project',
       fileCount: files.length,
       lastOpened: new Date().toISOString(),
+      isFolder: isFolder, // Track if this was opened as a folder or individual files
       // Store full file content so we can reload the project
       files: files.map(f => {
         // Ensure we're storing the actual content
@@ -169,7 +170,7 @@ function FileUploader({ onProjectLoad }) {
     localStorage.setItem('vibecanvas_recent_projects', JSON.stringify(updated))
   }
 
-  const readFiles = async (files) => {
+  const readFiles = async (files, isFolder = true) => {
     const projectFiles = []
     
     console.log('FileUploader: Reading files', {
@@ -251,7 +252,8 @@ function FileUploader({ onProjectLoad }) {
       const folderName = projectFiles[0]?.path?.split('/')[0] || 
                         projectFiles.find(f => f.type === 'html')?.name?.replace('.html', '') || 
                         'Untitled Project'
-      saveToRecentProjects(folderName, projectFiles)
+      // Use the isFolder parameter passed to readFiles
+      saveToRecentProjects(folderName, projectFiles, isFolder)
       onProjectLoad(projectFiles)
     } else {
       console.warn('No valid files found to load')
@@ -289,7 +291,8 @@ function FileUploader({ onProjectLoad }) {
       }
     })
     
-    await readFiles(files)
+    // Drag and drop is typically individual files, not folders
+    await readFiles(files, false)
   }
 
   const handleDragOver = (e) => {
@@ -304,12 +307,12 @@ function FileUploader({ onProjectLoad }) {
 
   const handleFolderSelect = async (e) => {
     const files = Array.from(e.target.files)
-    await readFiles(files)
+    await readFiles(files, true) // true = isFolder
   }
 
   const handleFileSelect = async (e) => {
     const files = Array.from(e.target.files)
-    await readFiles(files)
+    await readFiles(files, false) // false = isFolder (individual files)
   }
 
   const formatDate = (dateString) => {
@@ -361,64 +364,6 @@ function FileUploader({ onProjectLoad }) {
             <h1 className="welcome-title">Welcome</h1>
             <p className="welcome-subtitle">Open a project to get started</p>
 
-            {recentProjects.length > 0 ? (
-              <div className="recent-projects">
-                <h2 className="section-title">Recent Projects</h2>
-                <div className="projects-grid">
-                  {(showAllProjects ? recentProjects : recentProjects.slice(0, MAX_INITIAL_PROJECTS)).map((project, displayIndex) => {
-                    return (
-                    <div 
-                      key={project.path || project.name || displayIndex} 
-                      className="project-card"
-                      onClick={() => openRecentProject(project)}
-                      title={`Click to open ${project.name}`}
-                    >
-                      <button 
-                        className="project-remove"
-                        onClick={(e) => removeRecentProject(project.path, e)}
-                        aria-label="Remove project"
-                      >
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                          <line x1="18" y1="6" x2="6" y2="18" />
-                          <line x1="6" y1="6" x2="18" y2="18" />
-                        </svg>
-                      </button>
-                      <div className="project-icon">
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-                        </svg>
-                      </div>
-                      <div className="project-info">
-                        <div className="project-name">{project.name}</div>
-                        <div className="project-meta">
-                          {project.fileCount} file{project.fileCount !== 1 ? 's' : ''} • {formatDate(project.lastOpened)}
-                        </div>
-                      </div>
-                    </div>
-                    )
-                  })}
-                </div>
-                {recentProjects.length > MAX_INITIAL_PROJECTS && (
-                  <button 
-                    className="view-all-button"
-                    onClick={() => setShowAllProjects(!showAllProjects)}
-                  >
-                    {showAllProjects ? 'Show Less' : `View All (${recentProjects.length})`}
-                  </button>
-                )}
-              </div>
-            ) : (
-              <div className="empty-state">
-                <div className="empty-icon">
-                  <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-                  </svg>
-                </div>
-                <p className="empty-text">No recent projects</p>
-                <p className="empty-hint">Open a project to get started</p>
-              </div>
-            )}
-
             <div className="quick-actions">
               <button 
                 className="action-button"
@@ -437,10 +382,10 @@ function FileUploader({ onProjectLoad }) {
                   title="Select HTML, CSS, and JS files together (hold Cmd/Ctrl to select multiple)"
                 >
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                    <polyline points="17 8 12 3 7 8" />
-                    <line x1="12" y1="3" x2="12" y2="15" />
-                  </svg>
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <polyline points="17 8 12 3 7 8" />
+            <line x1="12" y1="3" x2="12" y2="15" />
+          </svg>
                   <span>Open Files</span>
                   <button
                     className="info-button-inline"
@@ -510,6 +455,73 @@ function FileUploader({ onProjectLoad }) {
                 )}
               </div>
             </div>
+
+            {recentProjects.length > 0 ? (
+              <div className="recent-projects">
+                <div className="section-header">
+                  <h2 className="section-title">Recent Projects</h2>
+                  {recentProjects.length > MAX_INITIAL_PROJECTS && (
+                    <button 
+                      className="view-all-button"
+                      onClick={() => setShowAllProjects(!showAllProjects)}
+                    >
+                      {showAllProjects ? 'Show Less' : `View All (${recentProjects.length})`}
+                    </button>
+                  )}
+                </div>
+                <div className="projects-grid">
+                  {(showAllProjects ? recentProjects : recentProjects.slice(0, MAX_INITIAL_PROJECTS)).map((project, displayIndex) => {
+                    return (
+                    <div 
+                      key={project.path || project.name || displayIndex} 
+                      className="project-card"
+                      onClick={() => openRecentProject(project)}
+                      title={`Click to open ${project.name}`}
+                    >
+                      <button 
+                        className="project-remove"
+                        onClick={(e) => removeRecentProject(project.path, e)}
+                        aria-label="Remove project"
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <line x1="18" y1="6" x2="6" y2="18" />
+                          <line x1="6" y1="6" x2="18" y2="18" />
+                        </svg>
+            </button>
+                      <div className="project-icon">
+                        {project.isFolder !== false ? (
+                          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                          </svg>
+                        ) : (
+                          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                            <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" />
+                            <polyline points="13 2 13 9 20 9" />
+                          </svg>
+                        )}
+                      </div>
+                      <div className="project-info">
+                        <div className="project-name">{project.name}</div>
+                        <div className="project-meta">
+                          {project.fileCount} file{project.fileCount !== 1 ? 's' : ''} • {formatDate(project.lastOpened)}
+                        </div>
+                      </div>
+                    </div>
+                    )
+                  })}
+                </div>
+              </div>
+            ) : (
+              <div className="empty-state">
+                <div className="empty-icon">
+                  <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                  </svg>
+                </div>
+                <p className="empty-text">No recent projects</p>
+                <p className="empty-hint">Open a project to get started</p>
+              </div>
+            )}
           </div>
         </main>
 

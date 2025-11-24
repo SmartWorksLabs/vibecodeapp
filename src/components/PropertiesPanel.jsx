@@ -347,9 +347,6 @@ function PropertiesPanel({ element, onPropertyChange, isInspectorEnabled, onText
   if (!element) {
     return (
       <div className="properties-panel">
-        <div className="properties-header">
-          <h3>Properties</h3>
-        </div>
         <div className="properties-empty">
           {isInspectorEnabled ? (
             <p>Click on an element to edit its properties</p>
@@ -462,7 +459,6 @@ function PropertiesPanel({ element, onPropertyChange, isInspectorEnabled, onText
   return (
     <div className="properties-panel">
       <div className="properties-header">
-        <h3>Properties</h3>
         <div className="element-info">
           <span className="element-tag">{element.tagName}</span>
           {element.id && <span className="element-id">#{element.id}</span>}

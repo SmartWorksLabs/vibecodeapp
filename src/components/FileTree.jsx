@@ -59,9 +59,6 @@ function FileTree({ files, selectedFile, onFileSelect, isInspectorEnabled }) {
 
   return (
     <div className="file-tree">
-      <div className="file-tree-header">
-        <h3>Project Files</h3>
-      </div>
       <div className="file-tree-content">
         {groupedFiles.html.length > 0 && (
           <div className="file-group">
