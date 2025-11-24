@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useImperativeHandle, forwardRef } from 're
 import GridOverlay from './GridOverlay'
 import './PreviewPane.css'
 
-const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElementSelect, onInspectorToggle, isInspectorEnabled, onSettingsToggle, gridOverlay, gridColor, isTextEditing, saveStatus, lastSaved, user, onAuthClick, onSaveClick, isAutoSaving, onFileSelect }, ref) => {
+const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElementSelect, onInspectorToggle, isInspectorEnabled, onSettingsToggle, gridOverlay, gridColor, isTextEditing, saveStatus, lastSaved, user, onAuthClick, onSaveClick, onFileSelect }, ref) => {
   const iframeRef = useRef(null)
   const [isInspecting, setIsInspecting] = useState(() => {
     console.log('PreviewPane: Initializing isInspecting state with isInspectorEnabled:', isInspectorEnabled)
@@ -54,7 +54,6 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
   const currentParentInspectorStateRef = useRef(isInspectorEnabled)
   const lastReloadTimeRef = useRef(0)
   const reloadDebounceRef = useRef(null)
-  const wasAutoSavingRef = useRef(false) // Track previous auto-saving state
   const lastNavigationTimeRef = useRef(0) // Throttle navigation
   const navigationThrottleRef = useRef(null) // Navigation throttle timer
 
@@ -134,23 +133,6 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
 
   useEffect(() => {
     if (!iframeRef.current || !files) return
-    
-    // Skip reload if auto-saving - preview already shows correct content via postMessage
-    if (isAutoSaving) {
-      console.log('Skipping iframe reload - auto-save in progress');
-      wasAutoSavingRef.current = true;
-      return;
-    }
-    
-    // If we were auto-saving and now we're not, skip this one reload (preview already has correct content)
-    if (wasAutoSavingRef.current && !isAutoSaving) {
-      console.log('Skipping iframe reload - just finished auto-save, preview already correct');
-      wasAutoSavingRef.current = false; // Reset after skipping once
-      return;
-    }
-    
-    // Normal reload - not during or after auto-save
-    wasAutoSavingRef.current = false;
 
     // Use selected HTML file if it's an HTML file, otherwise fall back to index.html or first HTML
     let htmlFile = null
@@ -1361,11 +1343,35 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
     // Debug: Log final HTML to verify CSS is included
     const hasStyleTags = htmlContent.includes('<style')
     const styleTagCount = (htmlContent.match(/<style/g) || []).length
+    
+    // Validate HTML content before creating blob
+    if (!htmlContent || typeof htmlContent !== 'string' || htmlContent.trim().length === 0) {
+      console.error('PreviewPane: HTML content is invalid or empty!', {
+        hasContent: !!htmlContent,
+        contentType: typeof htmlContent,
+        contentLength: htmlContent?.length,
+        htmlFile: htmlFile.name
+      });
+      setHasError(true);
+      setIsLoading(false);
+      return;
+    }
+    
+    // Check for basic HTML structure
+    const hasHtmlTag = htmlContent.includes('<html') || htmlContent.includes('<!DOCTYPE');
+    const hasBodyTag = htmlContent.includes('<body');
+    if (!hasHtmlTag && !hasBodyTag) {
+      console.warn('PreviewPane: HTML content may be malformed - missing html or body tags');
+    }
+    
     console.log('Final HTML check:', {
       hasStyleTags,
       styleTagCount,
       htmlLength: htmlContent.length,
-      first500Chars: htmlContent.substring(0, 500)
+      hasHtmlTag,
+      hasBodyTag,
+      first500Chars: htmlContent.substring(0, 500),
+      last200Chars: htmlContent.substring(Math.max(0, htmlContent.length - 200))
     })
 
     const blob = new Blob([htmlContent], { type: 'text/html' })
@@ -1384,23 +1390,42 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
       }
     }
     
-    // Clean up old URL if it exists
-    if (iframe?.dataset.blobUrl) {
-      URL.revokeObjectURL(iframe.dataset.blobUrl)
-    }
+    // Store old URL BEFORE creating/setting new one (critical for cleanup)
+    const oldBlobUrl = iframe?.dataset.blobUrl;
+    
     if (iframe) {
-      iframe.dataset.blobUrl = url
+      // Set new blob URL BEFORE revoking old one (prevents blank screen)
+      iframe.dataset.blobUrl = url;
       
-      // Clear loading state when iframe loads (for initial load)
-      iframe.onload = () => {
-        console.log('Initial iframe loaded successfully - clearing loading state');
-        // Clear loading after minimum time to show skeleton
-        setTimeout(() => {
-          setIsLoading(false);
-        }, 500);
+      // Clear loading state when iframe loads
+      const handleLoad = () => {
+        console.log('Preview iframe loaded successfully - clearing loading state');
+        setIsLoading(false);
+        
+        // Revoke old URL AFTER new one has loaded (prevents blank screen)
+        if (oldBlobUrl && oldBlobUrl !== url) {
+          setTimeout(() => {
+            try {
+              URL.revokeObjectURL(oldBlobUrl);
+              console.log('Revoked old blob URL in load handler');
+            } catch (e) {
+              console.warn('Error revoking old blob URL:', e);
+            }
+          }, 1000); // Wait a bit to ensure new URL is fully loaded
+        }
+        
+        // Remove event listener
+        if (iframe) {
+          iframe.removeEventListener('load', handleLoad);
+        }
       };
       
-      iframe.src = url
+      // Add load listener before setting src
+      iframe.addEventListener('load', handleLoad);
+      
+      // Set the new src (this triggers the load event)
+      console.log('Setting iframe src to new blob URL');
+      iframe.src = url;
     }
 
     // Listen for messages from iframe
@@ -2283,9 +2308,27 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
       if (iframe && handleLoad) {
         iframe.removeEventListener('load', handleLoad)
       }
-      URL.revokeObjectURL(url)
+      // CRITICAL FIX: Only revoke old URL, not the new one
+      // The new URL is handled in the load handler above
+      // If oldBlobUrl exists, it was already revoked in load handler, so skip here
+      // Only revoke if URL wasn't handled by load handler (e.g., component unmounting)
+      if (oldBlobUrl && oldBlobUrl !== url) {
+        // Old URL will be revoked in load handler, skip here
+        console.log('Cleanup: Old blob URL will be revoked by load handler');
+      } else if (url) {
+        // If no old URL (first load) or component unmounting, revoke this URL
+        // But wait a bit to ensure iframe has loaded
+        setTimeout(() => {
+          try {
+            URL.revokeObjectURL(url);
+            console.log('Cleanup: Revoked blob URL (no old URL or unmounting)');
+          } catch (e) {
+            console.warn('Error revoking blob URL in cleanup:', e);
+          }
+        }, 2000); // Longer delay for unmount case
+      }
     }
-  }, [files, selectedFile, isAutoSaving])
+  }, [files, selectedFile])
 
   const sendStyleUpdate = (property, value) => {
     if (iframeRef.current?.contentWindow) {

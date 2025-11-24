@@ -7,16 +7,16 @@ function Settings({ onClose, fontSize, onFontSizeChange, gridOverlay, onGridOver
         <div className="settings-section">
           <div className="settings-section-header">
             <h4>General</h4>
-            <button 
-              className="close-button"
-              onClick={onClose}
-              title="Close Settings"
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M19 6.41L17.59 5L12 10.59L6.41 5L5 6.41L10.59 12L5 17.59L6.41 19L12 13.41L17.59 19L19 17.59L13.41 12L19 6.41Z"/>
-              </svg>
-            </button>
-          </div>
+        <button 
+          className="close-button"
+          onClick={onClose}
+          title="Close Settings"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M19 6.41L17.59 5L12 10.59L6.41 5L5 6.41L10.59 12L5 17.59L6.41 19L12 13.41L17.59 19L19 17.59L13.41 12L19 6.41Z"/>
+          </svg>
+        </button>
+      </div>
           <div className="setting-row">
             <span>Auto-save changes</span>
             <input type="checkbox" defaultChecked />
@@ -29,7 +29,7 @@ function Settings({ onClose, fontSize, onFontSizeChange, gridOverlay, onGridOver
 
         <div className="settings-section">
           <div className="settings-section-header">
-            <h4>Editor</h4>
+          <h4>Editor</h4>
           </div>
           <div className="setting-row">
             <span>Interface size</span>
@@ -63,7 +63,7 @@ function Settings({ onClose, fontSize, onFontSizeChange, gridOverlay, onGridOver
 
         <div className="settings-section">
           <div className="settings-section-header">
-            <h4>Preview</h4>
+          <h4>Preview</h4>
           </div>
           <div className="setting-row">
             <span>Auto-refresh on save</span>
@@ -108,7 +108,7 @@ function Settings({ onClose, fontSize, onFontSizeChange, gridOverlay, onGridOver
 
         <div className="settings-section">
           <div className="settings-section-header">
-            <h4>Inspector</h4>
+          <h4>Inspector</h4>
           </div>
           <div className="setting-row">
             <span>Highlight on hover</span>
@@ -122,7 +122,7 @@ function Settings({ onClose, fontSize, onFontSizeChange, gridOverlay, onGridOver
 
         <div className="settings-section">
           <div className="settings-section-header">
-            <h4>Export</h4>
+          <h4>Export</h4>
           </div>
           <div className="setting-row">
             <span>Default format</span>

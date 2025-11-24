@@ -28,7 +28,6 @@ function App() {
   const [showAuthModal, setShowAuthModal] = useState(false)
   const [currentProjectName, setCurrentProjectName] = useState(null)
   const [currentProjectId, setCurrentProjectId] = useState(null)
-  const [isAutoSaving, setIsAutoSaving] = useState(false) // Flag to prevent iframe reload during auto-save
   
   const { user, loading: authLoading } = useAuth()
 
@@ -57,7 +56,7 @@ function App() {
   }, []) // Empty deps - only run on unmount
   const [previewKey, setPreviewKey] = useState(0)
   const previewPaneRef = useRef(null)
-  const isInternalUpdateRef = useRef(false) // Track if update is from auto-save to prevent reload loop
+  const isInternalUpdateRef = useRef(false) // Track if update is from manual save to prevent reload loop
 
   const handleProjectLoad = async (files) => {
     setProjectFiles(files)
@@ -246,92 +245,249 @@ function App() {
   }
 
   const updateHTMLFile = (newText, element = selectedElement, fileName = selectedFile?.name) => {
+    console.log('=== UPDATE HTML FILE DEBUG START ===');
     const targetElement = element || selectedElement;
     const targetFile = fileName ? projectFiles?.find(f => f.name === fileName) : selectedFile;
     
-    if (!targetElement || !targetFile || targetFile.type !== 'html') {
-      console.warn('Cannot update HTML file - missing element or file is not HTML');
+    // Aggressive debugging
+    console.log('newText:', newText);
+    console.log('newText type:', typeof newText);
+    console.log('newText length:', newText?.length);
+    console.log('targetElement exists:', !!targetElement);
+    console.log('targetFile exists:', !!targetFile);
+    
+    if (!targetElement || !targetFile) {
+      console.error('Missing element or file!', {
+        hasElement: !!targetElement,
+        hasFile: !!targetFile
+      });
+      console.log('=== UPDATE HTML FILE DEBUG END (FAILED - MISSING) ===');
+      return;
+    }
+    
+    if (targetFile.type !== 'html') {
+      console.warn('File is not HTML:', targetFile.type);
+      console.log('=== UPDATE HTML FILE DEBUG END (FAILED - NOT HTML) ===');
       return;
     }
 
-    console.log('Updating HTML file with new text:', newText);
-    console.log('Target element:', targetElement);
+    // Extract element properties with detailed logging
+    const elementTag = targetElement.tagName ? targetElement.tagName.toLowerCase() : null;
+    const elementId = targetElement.id || null;
+    const elementClass = targetElement.className ? (typeof targetElement.className === 'string' ? targetElement.className : targetElement.className.baseVal || '') : null;
+    const originalText = targetElement.textContent || targetElement.innerText || '';
+    const outerHTML = targetElement.outerHTML || '';
+    const innerHTML = targetElement.innerHTML || '';
+    const hasChildren = targetElement.children && targetElement.children.length > 0;
+
+    console.log('Element properties:', {
+      tag: elementTag,
+      id: elementId,
+      class: elementClass,
+      originalText: originalText,
+      originalTextLength: originalText?.length,
+      outerHTML: outerHTML?.substring(0, 200),
+      innerHTML: innerHTML?.substring(0, 200),
+      hasChildren: hasChildren,
+      childrenCount: targetElement.children?.length || 0
+    });
     console.log('Target file:', targetFile.name);
+    console.log('HTML content length:', targetFile.content?.length);
 
     let htmlContent = targetFile.content;
     
-    // Create a simple text replacement strategy
-    // This is a basic implementation - for complex cases, we'd need proper HTML parsing
-    
-    // Try to find and replace the text content
-    const elementTag = targetElement.tagName.toLowerCase();
-    const elementId = targetElement.id;
-    const elementClass = targetElement.className;
-    const originalText = targetElement.textContent;
+    if (!htmlContent) {
+      console.error('HTML content is empty or undefined!');
+      console.log('=== UPDATE HTML FILE DEBUG END (FAILED - NO CONTENT) ===');
+      return;
+    }
 
-    console.log('Looking for element:', { tag: elementTag, id: elementId, class: elementClass, originalText });
+    // Ensure newText is a string
+    if (typeof newText !== 'string') {
+      console.warn('newText is not a string, converting:', typeof newText, newText);
+      newText = String(newText);
+    }
 
     // Strategy 1: If element has an ID, find it specifically
     if (elementId) {
-      const idRegex = new RegExp(`(<${elementTag}[^>]*id=["']${elementId}["'][^>]*>)([^<]*)(</[^>]*>)`, 'gi');
-      const match = htmlContent.match(idRegex);
-      if (match) {
-        htmlContent = htmlContent.replace(idRegex, `$1${newText}$3`);
-        console.log('Updated HTML using ID selector');
-        handleFileUpdate(targetFile.name, htmlContent);
-        return;
+      console.log('Trying ID-based replacement for ID:', elementId);
+      // Match opening tag with ID, handle both with and without nested children
+      const escapedId = elementId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      
+      if (!hasChildren) {
+        // No children - simple text replacement
+        const idRegex = new RegExp(`(<${elementTag}[^>]*id=["']${escapedId}["'][^>]*>)([^<]*?)(</${elementTag}>)`, 'gis');
+        const match = htmlContent.match(idRegex);
+        if (match) {
+          console.log('Found match using ID (no children):', match[0].substring(0, 100));
+          const beforeLength = htmlContent.length;
+          htmlContent = htmlContent.replace(idRegex, `$1${newText}$3`);
+          const afterLength = htmlContent.length;
+          console.log('HTML content length changed:', beforeLength, '->', afterLength);
+          
+          // Validate HTML content after replacement
+          if (!htmlContent || htmlContent.trim().length === 0) {
+            console.error('HTML content became empty after replacement!');
+            console.log('=== UPDATE HTML FILE DEBUG END (FAILED - EMPTY) ===');
+            return;
+          }
+          
+          console.log('Updated HTML using ID selector');
+          handleFileUpdate(targetFile.name, htmlContent);
+          console.log('=== UPDATE HTML FILE DEBUG END (ID SUCCESS) ===');
+          return;
+        }
+      } else {
+        // Has children - need to preserve structure, only update direct text nodes
+        // Match the opening tag and try to find text immediately after it (before first child tag)
+        const idRegexWithText = new RegExp(`(<${elementTag}[^>]*id=["']${escapedId}["'][^>]*>)([^<]+?)(<)`, 'gis');
+        const matchWithText = htmlContent.match(idRegexWithText);
+        if (matchWithText && matchWithText[2].trim() === originalText.trim()) {
+          console.log('Found match using ID (has children, text before first child):', matchWithText[0].substring(0, 100));
+          const beforeLength = htmlContent.length;
+          htmlContent = htmlContent.replace(idRegexWithText, `$1${newText}$3`);
+          const afterLength = htmlContent.length;
+          console.log('HTML content length changed:', beforeLength, '->', afterLength);
+          
+          // Validate HTML content after replacement
+          if (!htmlContent || htmlContent.trim().length === 0) {
+            console.error('HTML content became empty after replacement!');
+            console.log('=== UPDATE HTML FILE DEBUG END (FAILED - EMPTY) ===');
+            return;
+          }
+          
+          console.log('Updated HTML using ID selector (preserved children)');
+          handleFileUpdate(targetFile.name, htmlContent);
+          console.log('=== UPDATE HTML FILE DEBUG END (ID SUCCESS WITH CHILDREN) ===');
+          return;
+        }
       }
+      console.warn('No match found for ID:', elementId);
     }
 
     // Strategy 2: If element has a class, try to find it
     if (elementClass) {
       const firstClass = elementClass.split(' ')[0];
-      const classRegex = new RegExp(`(<${elementTag}[^>]*class=["'][^"']*${firstClass}[^"']*["'][^>]*>)([^<]*)(</[^>]*>)`, 'gi');
-      const match = htmlContent.match(classRegex);
-      if (match) {
-        htmlContent = htmlContent.replace(classRegex, `$1${newText}$3`);
-        console.log('Updated HTML using class selector');
-        handleFileUpdate(targetFile.name, htmlContent);
-        return;
+      console.log('Trying class-based replacement for class:', firstClass);
+      const escapedClass = firstClass.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      
+      if (!hasChildren) {
+        // No children - simple text replacement
+        const classRegex = new RegExp(`(<${elementTag}[^>]*class=["'][^"']*${escapedClass}[^"']*["'][^>]*>)([^<]*?)(</${elementTag}>)`, 'gis');
+        const match = htmlContent.match(classRegex);
+        if (match) {
+          console.log('Found match using class (no children):', match[0].substring(0, 100));
+          const beforeLength = htmlContent.length;
+          htmlContent = htmlContent.replace(classRegex, `$1${newText}$3`);
+          const afterLength = htmlContent.length;
+          console.log('HTML content length changed:', beforeLength, '->', afterLength);
+          
+          // Validate HTML content after replacement
+          if (!htmlContent || htmlContent.trim().length === 0) {
+            console.error('HTML content became empty after replacement!');
+            console.log('=== UPDATE HTML FILE DEBUG END (FAILED - EMPTY) ===');
+            return;
+          }
+          
+          console.log('Updated HTML using class selector');
+          handleFileUpdate(targetFile.name, htmlContent);
+          console.log('=== UPDATE HTML FILE DEBUG END (CLASS SUCCESS) ===');
+          return;
+        }
+      } else {
+        // Has children - preserve structure
+        const classRegexWithText = new RegExp(`(<${elementTag}[^>]*class=["'][^"']*${escapedClass}[^"']*["'][^>]*>)([^<]+?)(<)`, 'gis');
+        const matchWithText = htmlContent.match(classRegexWithText);
+        if (matchWithText && matchWithText[2].trim() === originalText.trim()) {
+          console.log('Found match using class (has children, text before first child):', matchWithText[0].substring(0, 100));
+          const beforeLength = htmlContent.length;
+          htmlContent = htmlContent.replace(classRegexWithText, `$1${newText}$3`);
+          const afterLength = htmlContent.length;
+          console.log('HTML content length changed:', beforeLength, '->', afterLength);
+          
+          // Validate HTML content after replacement
+          if (!htmlContent || htmlContent.trim().length === 0) {
+            console.error('HTML content became empty after replacement!');
+            console.log('=== UPDATE HTML FILE DEBUG END (FAILED - EMPTY) ===');
+            return;
+          }
+          
+          console.log('Updated HTML using class selector (preserved children)');
+          handleFileUpdate(targetFile.name, htmlContent);
+          console.log('=== UPDATE HTML FILE DEBUG END (CLASS SUCCESS WITH CHILDREN) ===');
+          return;
+        }
       }
+      console.warn('No match found for class:', firstClass);
     }
 
-    // Strategy 3: Simple text replacement (fallback)
+    // Strategy 3: Text-based replacement (most fallback, least reliable)
     if (originalText && originalText.trim().length > 0) {
+      console.log('Trying text-based replacement');
       // Escape special regex characters in the original text
       const escapedOriginalText = originalText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const textRegex = new RegExp(`(>${escapedOriginalText}<)`, 'g');
-      if (htmlContent.match(textRegex)) {
-        htmlContent = htmlContent.replace(textRegex, `>${newText}<`);
+      // Try to match text between tags (more flexible pattern)
+      const textRegex = new RegExp(`(>\\s*)${escapedOriginalText}(\\s*<)`, 'gs');
+      const match = htmlContent.match(textRegex);
+      if (match) {
+        console.log('Found match using text replacement');
+        const beforeLength = htmlContent.length;
+        htmlContent = htmlContent.replace(textRegex, `$1${newText}$2`);
+        const afterLength = htmlContent.length;
+        console.log('HTML content length changed:', beforeLength, '->', afterLength);
+        
+        // Validate HTML content after replacement
+        if (!htmlContent || htmlContent.trim().length === 0) {
+          console.error('HTML content became empty after replacement!');
+          console.log('=== UPDATE HTML FILE DEBUG END (FAILED - EMPTY) ===');
+          return;
+        }
+        
         console.log('Updated HTML using text replacement');
         handleFileUpdate(targetFile.name, htmlContent);
+        console.log('=== UPDATE HTML FILE DEBUG END (TEXT SUCCESS) ===');
         return;
+      } else {
+        console.warn('Text pattern not found in HTML');
       }
     }
 
-    console.warn('Could not find element in HTML to update text content');
+    console.error('=== COULD NOT UPDATE HTML ===');
+    console.error('Failed to find element in HTML. Element details:', {
+      tag: elementTag,
+      id: elementId,
+      class: elementClass,
+      originalText: originalText?.substring(0, 50),
+      htmlPreview: htmlContent?.substring(0, 500)
+    });
+    console.log('=== UPDATE HTML FILE DEBUG END (FAILED) ===');
   }
 
-  // Auto-save function that persists changes to cloud and files
-  const autoSave = useCallback(async () => {
-    if (pendingTextChanges.size === 0) return;
+  // Manual save function that persists changes to cloud and files
+  const handleManualSave = useCallback(async () => {
+    if (pendingTextChanges.size === 0) {
+      console.log('No pending changes to save');
+      return;
+    }
+    
     if (!user || !projectFiles) {
       // If user is not logged in, just update local files
       if (pendingTextChanges.size > 0 && projectFiles) {
+        console.log('User not logged in - saving to local files only');
         pendingTextChanges.forEach((change) => {
           updateHTMLFile(change.newText, change.element, change.fileName);
         });
         setPendingTextChanges(new Map());
         setSaveStatus('saved');
         setLastSaved(new Date());
+        setIsTextEditing(false);
       }
       return;
     }
     
-    console.log('=== AUTO-SAVE TRIGGERED ===');
+    console.log('=== MANUAL SAVE TRIGGERED ===');
     console.log('Pending changes count:', pendingTextChanges.size);
     setSaveStatus('saving');
-    setIsAutoSaving(true); // Prevent iframe reload during auto-save
     
     try {
       let projectId = currentProjectId;
@@ -393,49 +549,36 @@ function App() {
       // Clear pending changes after saving
       setPendingTextChanges(new Map());
       
-      // Clear text editing state after auto-save to prevent stuck state
+      // Clear text editing state after save
       setIsTextEditing(false);
       
       // Update save status
       setSaveStatus('saved');
       setLastSaved(new Date());
-      console.log('=== AUTO-SAVE COMPLETED ===');
+      console.log('=== MANUAL SAVE COMPLETED ===');
     } catch (error) {
-      console.error('Auto-save error:', error);
+      console.error('Manual save error:', error);
       setSaveStatus('unsaved'); // Keep as unsaved on error
       isInternalUpdateRef.current = false; // Reset flag on error
-    } finally {
-      // Always clear auto-saving flag
-      setIsAutoSaving(false);
     }
   }, [pendingTextChanges, user, currentProjectId, currentProjectName, projectFiles]);
 
-  // Auto-save after 2 seconds of inactivity
-  useEffect(() => {
-    if (saveStatus === 'unsaved' && pendingTextChanges.size > 0 && user) {
-      const autoSaveTimer = setTimeout(() => {
-        console.log('Auto-save timer triggered');
-        autoSave();
-      }, 2000); // 2 second delay
-      
-      return () => clearTimeout(autoSaveTimer);
-    }
-  }, [saveStatus, pendingTextChanges.size, user, autoSave]);
-
-  const applyPendingTextChanges = async (forcePersist = false) => {
+  const applyPendingTextChanges = async (persistToFile = false) => {
     console.log('=== APPLYING PENDING TEXT CHANGES ===');
     console.log('Pending changes count:', pendingTextChanges.size);
-    console.log('Force persist to file:', forcePersist);
+    console.log('Persist to file:', persistToFile);
     
-    if (forcePersist && pendingTextChanges.size > 0) {
-      // Trigger auto-save to cloud
-      await autoSave();
-    } else {
-      // Just clear the pending changes without file updates to avoid reload loop
-      console.log('Clearing pending changes without file persistence');
-      setPendingTextChanges(new Map());
+    if (persistToFile && pendingTextChanges.size > 0) {
+      // Just update local files (don't save to cloud - that's manual save only)
+      console.log('Persisting changes to local files...');
+      pendingTextChanges.forEach((change) => {
+        updateHTMLFile(change.newText, change.element, change.fileName);
+      });
+      console.log('Changes persisted to local files');
     }
     
+    // Always keep pending changes until manual save
+    // Don't clear them here - user needs to manually save
     console.log('=== PENDING TEXT CHANGES APPLIED ===');
   }
 
@@ -497,10 +640,10 @@ function App() {
     console.log('=== FILE SELECT DEBUG ===');
     console.log('Switching from file:', selectedFile?.name, 'to file:', file?.name);
     
-    // Apply pending text changes when switching files
+    // Persist pending text changes to local files when switching files
     if (pendingTextChanges.size > 0 && selectedFile && file && selectedFile.name !== file.name) {
-      console.log('Applying pending text changes before file switch');
-      applyPendingTextChanges(true); // Force persist when switching files
+      console.log('Persisting pending text changes to local files before file switch');
+      applyPendingTextChanges(true); // Persist to local files only
     }
     
     setSelectedFile(file);
@@ -520,7 +663,7 @@ function App() {
             lastSaved={lastSaved}
             user={user}
             onAuthClick={() => setShowAuthModal(true)}
-            onSaveClick={autoSave}
+            onSaveClick={handleManualSave}
             isInspectorEnabled={isInspectorEnabled}
             onInspectorToggle={handleInspectorToggle}
             onSettingsToggle={handleSettingsToggle}
@@ -543,8 +686,7 @@ function App() {
               lastSaved={lastSaved}
               user={user}
               onAuthClick={() => setShowAuthModal(true)}
-              onSaveClick={autoSave}
-              isAutoSaving={isAutoSaving}
+              onSaveClick={handleManualSave}
               onFileSelect={handleFileSelect}
             />
           </div>
@@ -577,4 +719,5 @@ function App() {
 }
 
 export default App
+
 
