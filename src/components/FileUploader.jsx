@@ -1,4 +1,5 @@
-import { useRef, useState, useEffect } from 'react'
+import { useRef, useState, useEffect, Fragment } from 'react'
+import { useAuth } from '../contexts/AuthContext'
 import './FileUploader.css'
 
 function FileUploader({ onProjectLoad }) {
@@ -10,6 +11,14 @@ function FileUploader({ onProjectLoad }) {
   const folderInputRef = useRef(null)
   const fileInputRef = useRef(null)
   const openFilesButtonRef = useRef(null)
+  
+  // Auth state
+  const { user, signIn, signUp, signOut } = useAuth()
+  const [isLogin, setIsLogin] = useState(true)
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [authError, setAuthError] = useState('')
+  const [authLoading, setAuthLoading] = useState(false)
   
   const MAX_INITIAL_PROJECTS = 3
 
@@ -132,13 +141,27 @@ function FileUploader({ onProjectLoad }) {
         dataUrl: f.dataUrl || null
       }
       
-      // Only include content if it exists
-      if (f.content !== undefined && f.content !== null) {
-        file.content = f.content
+      // For images, content should be the dataUrl
+      if (f.isImage) {
+        // Use dataUrl as content if available, otherwise use stored content
+        file.content = f.dataUrl || f.content || ''
+        // Ensure dataUrl is set to the same value
+        if (!file.dataUrl && file.content) {
+          file.dataUrl = file.content
+        }
+        
+        // Check if it's a blob URL (invalid after page reload) and warn
+        if (file.content && file.content.startsWith('blob:')) {
+          console.warn(`Image ${f.name} has an invalid blob URL. Please re-open the project folder to fix.`)
+        }
       } else {
-        // If content is missing, use empty string (will show error but won't crash)
-        console.warn(`File ${f.name} has no content stored`)
-        file.content = ''
+        // For non-images, use stored content
+        if (f.content !== undefined && f.content !== null) {
+          file.content = f.content
+        } else {
+          console.warn(`File ${f.name} has no content stored`)
+          file.content = ''
+        }
       }
       
       return file
@@ -170,6 +193,39 @@ function FileUploader({ onProjectLoad }) {
     localStorage.setItem('vibecanvas_recent_projects', JSON.stringify(updated))
   }
 
+  const handleAuthSubmit = async (e) => {
+    e.preventDefault()
+    setAuthError('')
+    setAuthLoading(true)
+
+    try {
+      if (isLogin) {
+        const { error } = await signIn(email, password)
+        if (error) throw error
+        // Clear form on success
+        setEmail('')
+        setPassword('')
+      } else {
+        const { error } = await signUp(email, password)
+        if (error) throw error
+        // Clear form on success - user is automatically logged in
+        setEmail('')
+        setPassword('')
+      }
+    } catch (err) {
+      setAuthError(err.message)
+    } finally {
+      setAuthLoading(false)
+    }
+  }
+
+  const handleSignOut = async () => {
+    await signOut()
+    setEmail('')
+    setPassword('')
+    setAuthError('')
+  }
+
   const readFiles = async (files, isFolder = true) => {
     const projectFiles = []
     
@@ -196,9 +252,14 @@ function FileUploader({ onProjectLoad }) {
           let dataUrl = null;
           
           if (isImageFile) {
-            const arrayBuffer = await file.arrayBuffer();
-            const blob = new Blob([arrayBuffer], { type: file.type });
-            dataUrl = URL.createObjectURL(blob);
+            // Convert image to base64 data URL for persistence across page reloads
+            // Using FileReader for proper base64 encoding
+            dataUrl = await new Promise((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onload = () => resolve(reader.result);
+              reader.onerror = reject;
+              reader.readAsDataURL(file);
+            });
             content = dataUrl;
           } else {
             content = await file.text();
@@ -331,12 +392,12 @@ function FileUploader({ onProjectLoad }) {
   }
 
   return (
-      <div
+    <div
       className={`file-uploader ${isDragging ? 'dragging' : ''}`}
-        onDrop={handleDrop}
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-      >
+      onDrop={handleDrop}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+    >
       <div className="upload-container">
         <header className="upload-header">
           <div className="app-brand">
@@ -346,17 +407,28 @@ function FileUploader({ onProjectLoad }) {
             </svg>
             <span className="app-name">VibeCanvas</span>
           </div>
-          <button 
-            className="open-project-button"
-            onClick={() => folderInputRef.current?.click()}
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-              <polyline points="17 8 12 3 7 8" />
-              <line x1="12" y1="3" x2="12" y2="15" />
-            </svg>
-            Open Project
-          </button>
+          <div className="header-actions">
+            {user ? (
+              <div className="header-user-info">
+                <span className="header-user-email">{user.email}</span>
+                <button onClick={handleSignOut} className="header-sign-out-button">
+                  Sign Out
+                </button>
+              </div>
+            ) : (
+              <button 
+                className="open-project-button"
+                onClick={() => folderInputRef.current?.click()}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <polyline points="17 8 12 3 7 8" />
+                  <line x1="12" y1="3" x2="12" y2="15" />
+                </svg>
+                Open Project
+              </button>
+            )}
+          </div>
         </header>
 
         <main className="upload-main">
@@ -456,93 +528,174 @@ function FileUploader({ onProjectLoad }) {
               </div>
             </div>
 
-            {recentProjects.length > 0 ? (
-              <div className="recent-projects">
-                <div className="section-header">
-                  <h2 className="section-title">Recent Projects</h2>
-                  {recentProjects.length > MAX_INITIAL_PROJECTS && (
-                    <button 
-                      className="view-all-button"
-                      onClick={() => setShowAllProjects(!showAllProjects)}
-                    >
-                      {showAllProjects ? 'Show Less' : `View All (${recentProjects.length})`}
-                    </button>
-                  )}
-                </div>
-                <div className="projects-grid">
-                  {(showAllProjects ? recentProjects : recentProjects.slice(0, MAX_INITIAL_PROJECTS)).map((project, displayIndex) => {
-                    return (
-                    <div 
-                      key={project.path || project.name || displayIndex} 
-                      className="project-card"
-                      onClick={() => openRecentProject(project)}
-                      title={`Click to open ${project.name}`}
-                    >
-                      <button 
-                        className="project-remove"
-                        onClick={(e) => removeRecentProject(project.path, e)}
-                        aria-label="Remove project"
-                      >
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                          <line x1="18" y1="6" x2="6" y2="18" />
-                          <line x1="6" y1="6" x2="18" y2="18" />
-                        </svg>
-            </button>
-                      <div className="project-icon">
-                        {project.isFolder !== false ? (
-                          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-                          </svg>
-                        ) : (
-                          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                            <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" />
-                            <polyline points="13 2 13 9 20 9" />
-                          </svg>
-                        )}
-                      </div>
-                      <div className="project-info">
-                        <div className="project-name">{project.name}</div>
-                        <div className="project-meta">
-                          {project.fileCount} file{project.fileCount !== 1 ? 's' : ''} • {formatDate(project.lastOpened)}
-                        </div>
-                      </div>
+            {/* Auth Section */}
+            {!user && (
+            <div className="auth-section">
+              <div className="auth-form-container">
+                  <h3 className="auth-form-title">{isLogin ? 'Sign In' : 'Sign Up'}</h3>
+                  {authError && (
+                    <div className="auth-error">
+                      {authError}
                     </div>
-                    )
-                  })}
+                  )}
+                  <form onSubmit={handleAuthSubmit} className="auth-form">
+                    <div className="auth-form-group">
+                      <label htmlFor="auth-email">Email</label>
+                      <input
+                        id="auth-email"
+                        type="email"
+                        value={email}
+                        onChange={(e) => setEmail(e.target.value)}
+                        required
+                        disabled={authLoading}
+                        placeholder="your@email.com"
+                      />
+                    </div>
+                    <div className="auth-form-group">
+                      <label htmlFor="auth-password">Password</label>
+                      <input
+                        id="auth-password"
+                        type="password"
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        required
+                        disabled={authLoading}
+                        placeholder="••••••••"
+                        minLength={6}
+                      />
+                    </div>
+                    <button 
+                      type="submit" 
+                      disabled={authLoading} 
+                      className="auth-submit-button"
+                    >
+                      {authLoading ? 'Loading...' : (isLogin ? 'Sign In' : 'Sign Up')}
+                    </button>
+                  </form>
+                  <div className="auth-toggle">
+                    {isLogin ? (
+                      <>
+                        Don't have an account?{' '}
+                        <button 
+                          onClick={() => {
+                            setIsLogin(false)
+                            setAuthError('')
+                          }} 
+                          className="auth-link"
+                        >
+                          Sign up
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        Already have an account?{' '}
+                        <button 
+                          onClick={() => {
+                            setIsLogin(true)
+                            setAuthError('')
+                          }} 
+                          className="auth-link"
+                        >
+                          Sign in
+                        </button>
+                      </>
+                    )}
+                  </div>
                 </div>
-              </div>
-            ) : (
-              <div className="empty-state">
-                <div className="empty-icon">
-                  <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-                  </svg>
-                </div>
-                <p className="empty-text">No recent projects</p>
-                <p className="empty-hint">Open a project to get started</p>
               </div>
             )}
+
+            {/* Recent Projects - Only show when logged in */}
+            {user ? (
+              recentProjects.length > 0 ? (
+                <div className="recent-projects">
+                  <div className="section-header">
+                    <h2 className="section-title">Recent Projects</h2>
+                    {recentProjects.length > MAX_INITIAL_PROJECTS && (
+                      <button 
+                        className="view-all-button"
+                        onClick={() => setShowAllProjects(!showAllProjects)}
+                      >
+                        {showAllProjects ? 'Show Less' : `View All (${recentProjects.length})`}
+                      </button>
+                    )}
+                  </div>
+                  <div className="projects-grid">
+                    {(showAllProjects ? recentProjects : recentProjects.slice(0, MAX_INITIAL_PROJECTS)).map((project, displayIndex) => {
+                      return (
+                      <div 
+                        key={project.path || project.name || displayIndex} 
+                        className="project-card"
+                        onClick={() => openRecentProject(project)}
+                        title={`Click to open ${project.name}`}
+                      >
+                        <button 
+                          className="project-remove"
+                          onClick={(e) => removeRecentProject(project.path, e)}
+                          aria-label="Remove project"
+                        >
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <line x1="18" y1="6" x2="6" y2="18" />
+                            <line x1="6" y1="6" x2="18" y2="18" />
+                          </svg>
+                </button>
+                        <div className="project-icon">
+                          {project.isFolder !== false ? (
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                            </svg>
+                          ) : (
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                              <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" />
+                              <polyline points="13 2 13 9 20 9" />
+                            </svg>
+                          )}
+                        </div>
+                        <div className="project-info">
+                          <div className="project-name">{project.name}</div>
+                          <div className="project-meta">
+                            {project.fileCount} file{project.fileCount !== 1 ? 's' : ''} • {formatDate(project.lastOpened)}
+                          </div>
+                        </div>
+                      </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              ) : (
+                <div className="empty-state">
+                  <div className="empty-icon">
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                      <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                    </svg>
+                  </div>
+                  <p className="empty-text">No recent projects</p>
+                  <p className="empty-hint">Open a project to get started</p>
+                </div>
+              )
+            ) : null}
+            <div style={{ display: 'none' }}>
+              <input
+                ref={folderInputRef}
+                type="file"
+                webkitdirectory=""
+                directory=""
+                multiple
+                onChange={handleFolderSelect}
+                style={{ display: 'none' }}
+                accept=".html,.css,.js,.jpg,.jpeg,.png,.gif,.webp,.svg"
+              />
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                onChange={handleFileSelect}
+                style={{ display: 'none' }}
+                accept=".html,.css,.js,.jpg,.jpeg,.png,.gif,.webp,.svg"
+              />
+            </div>
           </div>
         </main>
-
-            <input
-          ref={folderInputRef}
-              type="file"
-              webkitdirectory=""
-              directory=""
-              multiple
-              onChange={handleFolderSelect}
-              style={{ display: 'none' }}
-          accept=".html,.css,.js,.jpg,.jpeg,.png,.gif,.webp,.svg"
-        />
-        <input
-          ref={fileInputRef}
-          type="file"
-          multiple
-          onChange={handleFileSelect}
-          style={{ display: 'none' }}
-          accept=".html,.css,.js,.jpg,.jpeg,.png,.gif,.webp,.svg"
-            />
       </div>
 
       {isDragging && (

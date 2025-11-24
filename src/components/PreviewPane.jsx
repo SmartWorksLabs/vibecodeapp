@@ -358,7 +358,13 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
       
       imageFiles.forEach(imageFile => {
         const imageName = imageFile.name;
-        const imageDataUrl = imageFile.dataUrl;
+        // Use dataUrl if available, otherwise fall back to content (for backward compatibility)
+        const imageDataUrl = imageFile.dataUrl || imageFile.content;
+        
+        if (!imageDataUrl) {
+          console.warn(`No data URL found for image: ${imageName}`);
+          return;
+        }
         
         // Replace various possible image references
         const patterns = [
@@ -1543,11 +1549,17 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
 
       let htmlContent = htmlFile.content
 
-      // Replace image src attributes with blob URLs
+      // Replace image src attributes with data URLs
       imageFiles.forEach(imageFile => {
         const imageName = imageFile.name
         const imagePath = imageFile.path
-        const dataUrl = imageFile.content // This is already a data URL from FileUploader
+        // Use dataUrl if available, otherwise fall back to content (for backward compatibility)
+        const dataUrl = imageFile.dataUrl || imageFile.content
+
+        if (!dataUrl) {
+          console.warn(`No data URL found for image: ${imageName}`);
+          return;
+        }
 
         // Replace various possible image references
         const patterns = [

@@ -5,7 +5,7 @@ import CodeEditor from './CodeEditor'
 import Settings from './Settings'
 import './TabPanel.css'
 
-function TabPanel({ files, selectedFile, onFileSelect, selectedElement, onPropertyChange, onFileUpdate, isInspectorEnabled, isSettingsOpen, onSettingsClose, fontSize, onFontSizeChange, gridOverlay, onGridOverlayChange, gridColor, onGridColorChange, onTextEditingChange }) {
+function TabPanel({ files, selectedFile, onFileSelect, selectedElement, onPropertyChange, onFileUpdate, isInspectorEnabled, isSettingsOpen, onSettingsClose, fontSize, onFontSizeChange, gridOverlay, onGridOverlayChange, gridColor, onGridColorChange, onTextEditingChange, onLogout }) {
   const [activeTab, setActiveTab] = useState('properties')
 
   const handleFileSelect = (file) => {
@@ -34,6 +34,7 @@ function TabPanel({ files, selectedFile, onFileSelect, selectedElement, onProper
           onGridOverlayChange={onGridOverlayChange}
           gridColor={gridColor}
           onGridColorChange={onGridColorChange}
+          onLogout={onLogout}
         />
       </div>
     )

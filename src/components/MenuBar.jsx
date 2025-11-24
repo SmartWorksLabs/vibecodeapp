@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import './MenuBar.css'
 
 // Helper function to format time ago
@@ -21,101 +21,116 @@ function MenuBar({
   onSaveClick, 
   isInspectorEnabled, 
   onInspectorToggle, 
-  onSettingsToggle 
+  onSettingsToggle,
+  onLogout
 }) {
   const [activeMenu, setActiveMenu] = useState(null)
   const [isMac, setIsMac] = useState(false)
+  const blurTimeoutRef = useRef(null)
 
   useEffect(() => {
     // Detect platform
     const platform = navigator.platform.toUpperCase()
     setIsMac(platform.indexOf('MAC') >= 0)
+    
+    // Cleanup timeout on unmount
+    return () => {
+      if (blurTimeoutRef.current) {
+        clearTimeout(blurTimeoutRef.current)
+      }
+    }
   }, [])
 
   const menuItems = [
     {
       label: 'File',
       items: [
-        { label: 'New Project', shortcut: isMac ? '⌘N' : 'Ctrl+N' },
-        { label: 'Open Project...', shortcut: isMac ? '⌘O' : 'Ctrl+O' },
-        { label: 'Open Recent', shortcut: '', hasSubmenu: true },
+        { label: 'New Project' },
+        { label: 'Open Project...' },
+        { label: 'Open Recent', hasSubmenu: true },
         { type: 'separator' },
-        { label: 'Save', shortcut: isMac ? '⌘S' : 'Ctrl+S' },
-        { label: 'Save As...', shortcut: isMac ? '⌘⇧S' : 'Ctrl+Shift+S' },
+        { label: 'Save' },
+        { label: 'Save As...' },
         { type: 'separator' },
-        { label: 'Export Project...', shortcut: '' },
-        { label: 'Close Project', shortcut: isMac ? '⌘W' : 'Ctrl+W' },
+        { label: 'Export Project...' },
+        { label: 'Close Project' },
         { type: 'separator' },
-        { label: isMac ? 'Quit VibeCanvas' : 'Exit', shortcut: isMac ? '⌘Q' : 'Alt+F4' }
+        { label: isMac ? 'Quit VibeCanvas' : 'Exit' }
       ]
     },
     {
       label: 'Edit',
       items: [
-        { label: 'Undo', shortcut: isMac ? '⌘Z' : 'Ctrl+Z' },
-        { label: 'Redo', shortcut: isMac ? '⌘⇧Z' : 'Ctrl+Shift+Z' },
+        { label: 'Undo' },
+        { label: 'Redo' },
         { type: 'separator' },
-        { label: 'Cut', shortcut: isMac ? '⌘X' : 'Ctrl+X' },
-        { label: 'Copy', shortcut: isMac ? '⌘C' : 'Ctrl+C' },
-        { label: 'Paste', shortcut: isMac ? '⌘V' : 'Ctrl+V' },
+        { label: 'Cut' },
+        { label: 'Copy' },
+        { label: 'Paste' },
         { type: 'separator' },
-        { label: 'Select All', shortcut: isMac ? '⌘A' : 'Ctrl+A' },
+        { label: 'Select All' },
         { type: 'separator' },
-        { label: 'Find', shortcut: isMac ? '⌘F' : 'Ctrl+F' },
-        { label: 'Replace', shortcut: isMac ? '⌘⇧F' : 'Ctrl+H' }
+        { label: 'Find' },
+        { label: 'Replace' }
       ]
     },
     {
       label: 'View',
       items: [
-        { label: 'Zoom In', shortcut: isMac ? '⌘=' : 'Ctrl+=' },
-        { label: 'Zoom Out', shortcut: isMac ? '⌘-' : 'Ctrl+-' },
-        { label: 'Reset Zoom', shortcut: isMac ? '⌘0' : 'Ctrl+0' },
+        { label: 'Zoom In' },
+        { label: 'Zoom Out' },
+        { label: 'Reset Zoom' },
         { type: 'separator' },
-        { label: 'Toggle Element Inspector', shortcut: isMac ? '⌘⇧I' : 'Ctrl+Shift+I' },
-        { label: 'Toggle Grid Overlay', shortcut: isMac ? '⌘⇧G' : 'Ctrl+Shift+G' },
+        { label: 'Toggle Element Inspector' },
+        { label: 'Toggle Grid Overlay' },
         { type: 'separator' },
-        { label: 'Full Screen', shortcut: isMac ? '⌃⌘F' : 'F11' },
-        { label: 'Toggle Sidebar', shortcut: isMac ? '⌘B' : 'Ctrl+B' }
+        { label: 'Full Screen' },
+        { label: 'Toggle Sidebar' }
       ]
     },
     {
       label: 'Project',
       items: [
-        { label: 'Project Settings...', shortcut: '' },
-        { label: 'Manage Files...', shortcut: '' },
+        { label: 'Project Settings...' },
+        { label: 'Manage Files...' },
         { type: 'separator' },
-        { label: 'Import Assets...', shortcut: '' },
-        { label: 'Export Assets...', shortcut: '' },
+        { label: 'Import Assets...' },
+        { label: 'Export Assets...' },
         { type: 'separator' },
-        { label: 'Project Properties...', shortcut: '' }
+        { label: 'Project Properties...' }
       ]
     },
     {
       label: 'Tools',
       items: [
-        { label: 'Code Editor', shortcut: isMac ? '⌘⇧E' : 'Ctrl+Shift+E' },
-        { label: 'Properties Panel', shortcut: isMac ? '⌘⇧P' : 'Ctrl+Shift+P' },
+        { label: 'Code Editor' },
+        { label: 'Properties Panel' },
         { type: 'separator' },
-        { label: 'Developer Tools', shortcut: isMac ? '⌥⌘I' : 'Ctrl+Shift+I' },
-        { label: 'Console', shortcut: isMac ? '⌥⌘C' : 'Ctrl+Shift+C' }
+        { label: 'Developer Tools' },
+        { label: 'Console' }
       ]
     },
     {
       label: 'Help',
       items: [
-        { label: 'Documentation', shortcut: '' },
-        { label: 'Keyboard Shortcuts', shortcut: isMac ? '⌘K ⌘S' : 'Ctrl+K Ctrl+S' },
+        { label: 'Documentation' },
+        { label: 'Keyboard Shortcuts' },
         { type: 'separator' },
-        { label: 'Report Issue', shortcut: '' },
-        { label: 'Check for Updates', shortcut: '' },
+        { label: 'Report Issue' },
+        { label: 'Check for Updates' },
         { type: 'separator' },
-        { label: 'About VibeCanvas', shortcut: '' }
+        { label: 'About VibeCanvas' }
       ]
     }
   ]
 
   const handleMenuClick = (menuLabel) => {
+    // Cancel any pending blur timeout
+    if (blurTimeoutRef.current) {
+      clearTimeout(blurTimeoutRef.current)
+      blurTimeoutRef.current = null
+    }
+    
     if (activeMenu === menuLabel) {
       setActiveMenu(null)
     } else {
@@ -123,10 +138,18 @@ function MenuBar({
     }
   }
 
-  const handleMenuBlur = () => {
+  const handleMenuBlur = (e) => {
+    // Check if the blur is because we're clicking on another menu item
+    // If the related target is another menu button, don't close
+    const relatedTarget = e.relatedTarget
+    if (relatedTarget && relatedTarget.closest('.menu-item')) {
+      return // Don't close if clicking on another menu item
+    }
+    
     // Close menu when clicking outside
-    setTimeout(() => {
+    blurTimeoutRef.current = setTimeout(() => {
       setActiveMenu(null)
+      blurTimeoutRef.current = null
     }, 200)
   }
 
@@ -142,6 +165,16 @@ function MenuBar({
     }
   }
 
+  const handleMenuItemClick = (itemLabel) => {
+    if (itemLabel === (isMac ? 'Quit VibeCanvas' : 'Exit')) {
+      if (onLogout) {
+        onLogout()
+      }
+    }
+    // Close menu after clicking
+    setActiveMenu(null)
+  }
+
   return (
     <div className={`menu-bar ${isMac ? 'mac' : 'windows'}`}>
       <div className="menu-bar-left">
@@ -149,13 +182,25 @@ function MenuBar({
           <div key={menu.label} className="menu-item-wrapper">
             <button
               className={`menu-item ${activeMenu === menu.label ? 'active' : ''}`}
-              onClick={() => handleMenuClick(menu.label)}
+              onMouseDown={(e) => {
+                e.preventDefault() // Prevent blur from firing first
+                handleMenuClick(menu.label)
+              }}
               onBlur={handleMenuBlur}
             >
               {menu.label}
             </button>
             {activeMenu === menu.label && (
-              <div className="menu-dropdown">
+              <div 
+                className="menu-dropdown"
+                onMouseEnter={() => {
+                  // Cancel blur timeout when mouse enters dropdown
+                  if (blurTimeoutRef.current) {
+                    clearTimeout(blurTimeoutRef.current)
+                    blurTimeoutRef.current = null
+                  }
+                }}
+              >
                 {menu.items.map((item, index) => {
                   if (item.type === 'separator') {
                     return <div key={`${menu.label}-sep-${index}`} className="menu-separator" />
@@ -163,16 +208,10 @@ function MenuBar({
                   return (
                     <div
                       key={`${menu.label}-${index}`}
-                      className={`menu-dropdown-item ${item.hasSubmenu ? 'has-submenu' : ''} ${item.shortcut ? '' : 'no-shortcut'}`}
+                      className={`menu-dropdown-item ${item.hasSubmenu ? 'has-submenu' : ''}`}
+                      onClick={() => handleMenuItemClick(item.label)}
                     >
                       <span className="menu-item-label">{item.label}</span>
-                      {item.shortcut && (
-                        <span className="menu-item-shortcut">
-                          {item.shortcut.split(' ').map((key, i) => (
-                            <kbd key={i}>{key}</kbd>
-                          ))}
-                        </span>
-                      )}
                       {item.hasSubmenu && (
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                           <polyline points="9 18 15 12 9 6" />

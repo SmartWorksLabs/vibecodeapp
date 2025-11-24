@@ -23,7 +23,8 @@ function AuthModal({ onClose }) {
       } else {
         const { error } = await signUp(email, password)
         if (error) throw error
-        setError('Check your email to confirm your account!')
+        // User is automatically logged in after signup (email confirmation disabled)
+        onClose()
       }
     } catch (err) {
       setError(err.message)

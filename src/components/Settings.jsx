@@ -1,6 +1,6 @@
 import './Settings.css'
 
-function Settings({ onClose, fontSize, onFontSizeChange, gridOverlay, onGridOverlayChange, gridColor, onGridColorChange }) {
+function Settings({ onClose, fontSize, onFontSizeChange, gridOverlay, onGridOverlayChange, gridColor, onGridColorChange, onLogout }) {
   return (
     <div className="settings">
       <div className="settings-content">
@@ -139,6 +139,23 @@ function Settings({ onClose, fontSize, onFontSizeChange, gridOverlay, onGridOver
             <span>Minify JS</span>
             <input type="checkbox" />
           </div>
+        </div>
+
+        <div className="settings-section">
+          <div className="settings-section-header">
+            <h4>Account</h4>
+          </div>
+          {onLogout && (
+            <div className="setting-row">
+              <span>Sign out</span>
+              <button 
+                onClick={onLogout}
+                className="logout-button"
+              >
+                Sign Out
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </div>

@@ -29,7 +29,7 @@ function App() {
   const [currentProjectName, setCurrentProjectName] = useState(null)
   const [currentProjectId, setCurrentProjectId] = useState(null)
   
-  const { user, loading: authLoading } = useAuth()
+  const { user, loading: authLoading, signOut } = useAuth()
 
   // Debug state changes
   useEffect(() => {
@@ -650,6 +650,22 @@ function App() {
     console.log('=== END FILE SELECT DEBUG ===');
   }
 
+  const handleLogout = async () => {
+    // Sign out from auth
+    await signOut()
+    // Reset all project state to return to welcome screen
+    setProjectFiles(null)
+    setSelectedFile(null)
+    setSelectedElement(null)
+    setCurrentProjectName(null)
+    setCurrentProjectId(null)
+    setPendingTextChanges(new Map())
+    setSaveStatus('saved')
+    setLastSaved(null)
+    setIsTextEditing(false)
+    setIsSettingsOpen(false)
+  }
+
   return (
     <div className={`app font-size-${fontSize}`}>
       {showAuthModal && <AuthModal onClose={() => setShowAuthModal(false)} />}
@@ -667,6 +683,7 @@ function App() {
             isInspectorEnabled={isInspectorEnabled}
             onInspectorToggle={handleInspectorToggle}
             onSettingsToggle={handleSettingsToggle}
+            onLogout={handleLogout}
           />
         <div className="app-layout">
           <div className="preview-section">
@@ -709,6 +726,7 @@ function App() {
               gridColor={gridColor}
               onGridColorChange={handleGridColorChange}
               onTextEditingChange={setIsTextEditing}
+              onLogout={handleLogout}
             />
           </aside>
         </div>
