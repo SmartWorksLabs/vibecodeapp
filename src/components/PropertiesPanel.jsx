@@ -767,6 +767,9 @@ function PropertiesPanel({ element, onPropertyChange, isInspectorEnabled, onText
             <option value="none">None</option>
           </select>
         </div>
+        
+        {/* Spacer to ensure last content is fully visible when scrolled */}
+        <div style={{ height: '2rem', flexShrink: 0 }}></div>
       </div>
     </div>
   )

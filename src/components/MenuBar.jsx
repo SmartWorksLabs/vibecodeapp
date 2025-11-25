@@ -22,7 +22,7 @@ function MenuBar({
   isInspectorEnabled, 
   onInspectorToggle, 
   onSettingsToggle,
-  onLogout
+  onReturnToWelcome
 }) {
   const [activeMenu, setActiveMenu] = useState(null)
   const [isMac, setIsMac] = useState(false)
@@ -167,8 +167,8 @@ function MenuBar({
 
   const handleMenuItemClick = (itemLabel) => {
     if (itemLabel === (isMac ? 'Quit VibeCanvas' : 'Exit')) {
-      if (onLogout) {
-        onLogout()
+      if (onReturnToWelcome) {
+        onReturnToWelcome()
       }
     }
     // Close menu after clicking

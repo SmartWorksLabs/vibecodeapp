@@ -29,7 +29,7 @@ function App() {
   const [currentProjectName, setCurrentProjectName] = useState(null)
   const [currentProjectId, setCurrentProjectId] = useState(null)
   
-  const { user, loading: authLoading, signOut } = useAuth()
+  const { user, loading: authLoading } = useAuth()
 
   // Debug state changes
   useEffect(() => {
@@ -650,10 +650,8 @@ function App() {
     console.log('=== END FILE SELECT DEBUG ===');
   }
 
-  const handleLogout = async () => {
-    // Sign out from auth
-    await signOut()
-    // Reset all project state to return to welcome screen
+  const handleReturnToWelcome = () => {
+    // Reset all project state to return to welcome screen (but keep user logged in)
     setProjectFiles(null)
     setSelectedFile(null)
     setSelectedElement(null)
@@ -683,7 +681,7 @@ function App() {
             isInspectorEnabled={isInspectorEnabled}
             onInspectorToggle={handleInspectorToggle}
             onSettingsToggle={handleSettingsToggle}
-            onLogout={handleLogout}
+            onReturnToWelcome={handleReturnToWelcome}
           />
         <div className="app-layout">
           <div className="preview-section">
@@ -726,7 +724,6 @@ function App() {
               gridColor={gridColor}
               onGridColorChange={handleGridColorChange}
               onTextEditingChange={setIsTextEditing}
-              onLogout={handleLogout}
             />
           </aside>
         </div>

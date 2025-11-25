@@ -1,7 +1,8 @@
 .properties-panel {
   display: flex;
   flex-direction: column;
-  height: 100%;
+  flex: 1;
+  min-height: 0; /* Critical for flex scrolling */
   width: 100%;
   overflow-x: hidden;
   box-sizing: border-box;
@@ -59,15 +60,23 @@
 
 .properties-content {
   flex: 1;
+  min-height: 0; /* Critical for flex scrolling */
   overflow-y: auto;
   overflow-x: hidden;
   padding: 0.5rem;
+  padding-bottom: 2rem; /* Extra padding at bottom to ensure last content is fully visible */
   width: 100%;
   box-sizing: border-box;
+  -webkit-overflow-scrolling: touch; /* Smooth scrolling on iOS */
+  scroll-padding-bottom: 1rem; /* Ensure last element is fully visible when scrolled */
 }
 
 .property-group {
   margin-bottom: 0.625rem;
+}
+
+.property-group:last-child {
+  margin-bottom: 1.5rem; /* Extra margin on last group to ensure it's fully visible */
 }
 
 .property-group-row {
