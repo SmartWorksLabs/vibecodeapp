@@ -1,6 +1,6 @@
 import './Settings.css'
 
-function Settings({ onClose, fontSize, onFontSizeChange, gridOverlay, onGridOverlayChange, gridColor, onGridColorChange }) {
+function Settings({ onClose, fontSize, onFontSizeChange, gridOverlay, onGridOverlayChange, gridColor, onGridColorChange, showFileExtensions, onShowFileExtensionsChange, lineNumbers, onLineNumbersChange, tabSize, onTabSizeChange }) {
   return (
     <div className="settings">
       <div className="settings-content">
@@ -16,14 +16,14 @@ function Settings({ onClose, fontSize, onFontSizeChange, gridOverlay, onGridOver
             <path d="M19 6.41L17.59 5L12 10.59L6.41 5L5 6.41L10.59 12L5 17.59L6.41 19L12 13.41L17.59 19L19 17.59L13.41 12L19 6.41Z"/>
           </svg>
         </button>
-      </div>
-          <div className="setting-row">
-            <span>Auto-save changes</span>
-            <input type="checkbox" defaultChecked />
           </div>
           <div className="setting-row">
             <span>Show file extensions</span>
-            <input type="checkbox" defaultChecked />
+            <input 
+              type="checkbox" 
+              checked={showFileExtensions}
+              onChange={(e) => onShowFileExtensionsChange(e.target.checked)}
+            />
           </div>
         </div>
 
@@ -45,15 +45,19 @@ function Settings({ onClose, fontSize, onFontSizeChange, gridOverlay, onGridOver
           </div>
           <div className="setting-row">
             <span>Line numbers</span>
-            <input type="checkbox" defaultChecked />
-          </div>
-          <div className="setting-row">
-            <span>Word wrap</span>
-            <input type="checkbox" defaultChecked />
+            <input 
+              type="checkbox" 
+              checked={lineNumbers}
+              onChange={(e) => onLineNumbersChange(e.target.checked)}
+            />
           </div>
           <div className="setting-row">
             <span>Tab size</span>
-            <select defaultValue="2" className="compact-select">
+            <select 
+              value={tabSize} 
+              onChange={(e) => onTabSizeChange(e.target.value)}
+              className="compact-select"
+            >
               <option value="2">2 spaces</option>
               <option value="4">4 spaces</option>
               <option value="8">8 spaces</option>
@@ -64,10 +68,6 @@ function Settings({ onClose, fontSize, onFontSizeChange, gridOverlay, onGridOver
         <div className="settings-section">
           <div className="settings-section-header">
           <h4>Preview</h4>
-          </div>
-          <div className="setting-row">
-            <span>Auto-refresh on save</span>
-            <input type="checkbox" defaultChecked />
           </div>
           <div className="setting-row">
             <span>Grid overlay</span>
@@ -100,24 +100,6 @@ function Settings({ onClose, fontSize, onFontSizeChange, gridOverlay, onGridOver
               </select>
             </div>
           )}
-          <div className="setting-row">
-            <span>Responsive preview</span>
-            <input type="checkbox" />
-          </div>
-        </div>
-
-        <div className="settings-section">
-          <div className="settings-section-header">
-          <h4>Inspector</h4>
-          </div>
-          <div className="setting-row">
-            <span>Highlight on hover</span>
-            <input type="checkbox" defaultChecked />
-          </div>
-          <div className="setting-row">
-            <span>Show element info</span>
-            <input type="checkbox" defaultChecked />
-          </div>
         </div>
 
         <div className="settings-section">

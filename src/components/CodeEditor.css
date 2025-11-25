@@ -1,7 +1,8 @@
 .code-editor {
   display: flex;
   flex-direction: column;
-  height: 100%;
+  flex: 1;
+  min-height: 0; /* Critical for flex scrolling */
   width: 100%;
   overflow-x: hidden;
   box-sizing: border-box;
@@ -43,6 +44,7 @@
 
 .code-editor-content {
   flex: 1;
+  min-height: 0; /* Critical for flex scrolling */
   overflow: hidden;
   position: relative;
 }

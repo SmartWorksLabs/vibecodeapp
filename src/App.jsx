@@ -21,6 +21,9 @@ function App() {
   const [fontSize, setFontSize] = useState('medium') // small, medium, large
   const [gridOverlay, setGridOverlay] = useState('none') // none, small, medium, large, custom
   const [gridColor, setGridColor] = useState('blue') // blue, white, red, green, purple, orange
+  const [showFileExtensions, setShowFileExtensions] = useState(true) // show file extensions in file tree
+  const [lineNumbers, setLineNumbers] = useState(true) // show line numbers in code editor
+  const [tabSize, setTabSize] = useState(2) // tab size in code editor (2, 4, or 8)
   const [pendingTextChanges, setPendingTextChanges] = useState(new Map())
   const [isTextEditing, setIsTextEditing] = useState(false)
   const [saveStatus, setSaveStatus] = useState('saved') // 'saved', 'saving', 'unsaved'
@@ -173,6 +176,18 @@ function App() {
 
   const handleGridColorChange = (newGridColor) => {
     setGridColor(newGridColor)
+  }
+
+  const handleShowFileExtensionsChange = (show) => {
+    setShowFileExtensions(show)
+  }
+
+  const handleLineNumbersChange = (show) => {
+    setLineNumbers(show)
+  }
+
+  const handleTabSizeChange = (size) => {
+    setTabSize(parseInt(size))
   }
 
   const handlePropertyChange = (property, value, childElement = null) => {
@@ -724,6 +739,12 @@ function App() {
               gridColor={gridColor}
               onGridColorChange={handleGridColorChange}
               onTextEditingChange={setIsTextEditing}
+              showFileExtensions={showFileExtensions}
+              onShowFileExtensionsChange={handleShowFileExtensionsChange}
+              lineNumbers={lineNumbers}
+              onLineNumbersChange={handleLineNumbersChange}
+              tabSize={tabSize}
+              onTabSizeChange={handleTabSizeChange}
             />
           </aside>
         </div>

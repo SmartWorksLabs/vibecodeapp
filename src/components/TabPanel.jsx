@@ -5,7 +5,7 @@ import CodeEditor from './CodeEditor'
 import Settings from './Settings'
 import './TabPanel.css'
 
-function TabPanel({ files, selectedFile, onFileSelect, selectedElement, onPropertyChange, onFileUpdate, isInspectorEnabled, isSettingsOpen, onSettingsClose, fontSize, onFontSizeChange, gridOverlay, onGridOverlayChange, gridColor, onGridColorChange, onTextEditingChange }) {
+function TabPanel({ files, selectedFile, onFileSelect, selectedElement, onPropertyChange, onFileUpdate, isInspectorEnabled, isSettingsOpen, onSettingsClose, fontSize, onFontSizeChange, gridOverlay, onGridOverlayChange, gridColor, onGridColorChange, onTextEditingChange, showFileExtensions, onShowFileExtensionsChange, lineNumbers, onLineNumbersChange, tabSize, onTabSizeChange }) {
   const [activeTab, setActiveTab] = useState('properties')
 
   const handleFileSelect = (file) => {
@@ -34,6 +34,12 @@ function TabPanel({ files, selectedFile, onFileSelect, selectedElement, onProper
           onGridOverlayChange={onGridOverlayChange}
           gridColor={gridColor}
           onGridColorChange={onGridColorChange}
+          showFileExtensions={showFileExtensions}
+          onShowFileExtensionsChange={onShowFileExtensionsChange}
+          lineNumbers={lineNumbers}
+          onLineNumbersChange={onLineNumbersChange}
+          tabSize={tabSize}
+          onTabSizeChange={onTabSizeChange}
         />
       </div>
     )
@@ -77,6 +83,8 @@ function TabPanel({ files, selectedFile, onFileSelect, selectedElement, onProper
             <CodeEditor
               file={selectedFile}
               onFileUpdate={(content) => onFileUpdate(selectedFile.name, content)}
+              lineNumbers={lineNumbers}
+              tabSize={tabSize}
             />
           ) : (
             <div className="tab-empty">
@@ -91,6 +99,7 @@ function TabPanel({ files, selectedFile, onFileSelect, selectedElement, onProper
             selectedFile={selectedFile}
             onFileSelect={handleFileSelect}
             isInspectorEnabled={isInspectorEnabled}
+            showFileExtensions={showFileExtensions}
           />
         )}
       </div>

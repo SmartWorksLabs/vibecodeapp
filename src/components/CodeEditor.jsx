@@ -1,7 +1,7 @@
 import Editor from '@monaco-editor/react'
 import './CodeEditor.css'
 
-function CodeEditor({ file, onFileUpdate }) {
+function CodeEditor({ file, onFileUpdate, lineNumbers = true, tabSize = 2 }) {
   const getLanguage = (fileName) => {
     if (fileName.endsWith('.html')) return 'html'
     if (fileName.endsWith('.css')) return 'css'
@@ -40,12 +40,12 @@ function CodeEditor({ file, onFileUpdate }) {
           options={{
             minimap: { enabled: false },
             fontSize: 11,
-            lineNumbers: 'on',
+            lineNumbers: lineNumbers ? 'on' : 'off',
             lineNumbersMinChars: 3,
-            scrollBeyondLastLine: false,
+            scrollBeyondLastLine: true, // Allow scrolling beyond last line to see end
             automaticLayout: true,
-            wordWrap: 'on',
-            tabSize: 2,
+            wordWrap: 'on', // Always enabled
+            tabSize: tabSize,
             renderWhitespace: 'none',
             folding: true,
             showFoldingControls: 'always',
@@ -56,7 +56,7 @@ function CodeEditor({ file, onFileUpdate }) {
               verticalScrollbarSize: 8,
               horizontalScrollbarSize: 8
             },
-            padding: { top: 8, bottom: 8 },
+            padding: { top: 8, bottom: 32 }, // Extra bottom padding to ensure last line is visible
             lineHeight: 16,
             letterSpacing: 0.3
           }}

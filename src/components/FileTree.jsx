@@ -1,6 +1,6 @@
 import './FileTree.css'
 
-function FileTree({ files, selectedFile, onFileSelect, isInspectorEnabled }) {
+function FileTree({ files, selectedFile, onFileSelect, isInspectorEnabled, showFileExtensions = true }) {
   const groupedFiles = {
     html: files.filter(f => f.type === 'html'),
     css: files.filter(f => f.type === 'css'),
@@ -70,7 +70,9 @@ function FileTree({ files, selectedFile, onFileSelect, isInspectorEnabled }) {
                 onClick={() => onFileSelect(file)}
               >
                 <span className="file-icon"><FileIcon type={file.type} /></span>
-                <span className="file-name">{file.name}</span>
+                <span className="file-name">
+                  {showFileExtensions ? file.name : file.name.replace(/\.[^/.]+$/, '')}
+                </span>
               </div>
             ))}
           </div>
@@ -86,7 +88,9 @@ function FileTree({ files, selectedFile, onFileSelect, isInspectorEnabled }) {
                 onClick={() => onFileSelect(file)}
               >
                 <span className="file-icon"><FileIcon type={file.type} /></span>
-                <span className="file-name">{file.name}</span>
+                <span className="file-name">
+                  {showFileExtensions ? file.name : file.name.replace(/\.[^/.]+$/, '')}
+                </span>
               </div>
             ))}
           </div>
@@ -102,7 +106,9 @@ function FileTree({ files, selectedFile, onFileSelect, isInspectorEnabled }) {
                 onClick={() => onFileSelect(file)}
               >
                 <span className="file-icon"><FileIcon type={file.type} /></span>
-                <span className="file-name">{file.name}</span>
+                <span className="file-name">
+                  {showFileExtensions ? file.name : file.name.replace(/\.[^/.]+$/, '')}
+                </span>
               </div>
             ))}
           </div>
@@ -131,7 +137,9 @@ function FileTree({ files, selectedFile, onFileSelect, isInspectorEnabled }) {
                   style={!isClickable ? { pointerEvents: 'none' } : {}}
                 >
                   <span className="file-icon"><FileIcon type={file.type} /></span>
-                  <span className="file-name">{file.name}</span>
+                  <span className="file-name">
+                    {showFileExtensions ? file.name : file.name.replace(/\.[^/.]+$/, '')}
+                  </span>
                 </div>
               )
             })}
