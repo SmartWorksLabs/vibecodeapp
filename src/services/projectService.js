@@ -1,6 +1,62 @@
 import { supabase } from '../lib/supabase'
 
 /**
+ * Save a project as a new project (always creates, never updates)
+ */
+export const saveProjectAsNew = async (projectName, files, userId) => {
+  try {
+    // Always create a new project (don't check for existing)
+    const { data: newProject, error: projectError } = await supabase
+      .from('projects')
+      .insert({
+        name: projectName,
+        user_id: userId,
+      })
+      .select()
+      .single()
+
+    if (projectError) throw projectError
+    const projectId = newProject.id
+
+    // Insert all files for this new project
+    const fileInserts = files.map((file) => ({
+      project_id: projectId,
+      file_name: file.name,
+      file_content: file.content,
+      file_type: file.type || file.name.split('.').pop(),
+    }))
+
+    const { error: filesError } = await supabase
+      .from('project_files')
+      .insert(fileInserts)
+
+    if (filesError) {
+      // If it's a conflict error, try deleting and re-inserting
+      if (filesError.code === '23505' || filesError.message?.includes('duplicate') || filesError.message?.includes('409')) {
+        console.log('Conflict detected, retrying file insert after delete...')
+        await supabase
+          .from('project_files')
+          .delete()
+          .eq('project_id', projectId)
+        
+        const { error: retryError } = await supabase
+          .from('project_files')
+          .insert(fileInserts)
+        
+        if (retryError) throw retryError
+      } else {
+        throw filesError
+      }
+    }
+
+    return { success: true, projectId }
+  } catch (error) {
+    console.error('Error saving project as new:', error)
+    throw error
+  }
+}
+
+/**
  * Save or update a project in Supabase
  */
 export const saveProject = async (projectName, files, userId) => {
@@ -16,13 +72,31 @@ export const saveProject = async (projectName, files, userId) => {
     let projectId
 
     if (existingProjects && existingProjects.id) {
-      // Update existing project
+      // Update existing project and clear deleted_at if it was soft-deleted
       projectId = existingProjects.id
-      const { error: updateError } = await supabase
-        .from('projects')
-        .update({ updated_at: new Date().toISOString() })
-        .eq('id', projectId)
-      if (updateError) throw updateError
+      // Try to update with deleted_at: null, but handle gracefully if column doesn't exist
+      try {
+        const { error: updateError } = await supabase
+          .from('projects')
+          .update({ 
+            updated_at: new Date().toISOString(),
+            deleted_at: null // Clear deleted_at to restore the project
+          })
+          .eq('id', projectId)
+        if (updateError) throw updateError
+      } catch (error) {
+        // If deleted_at column doesn't exist, try without it
+        if (error.message && error.message.includes('deleted_at')) {
+          console.warn('⚠️ deleted_at column not found in database, updating without it')
+          const { error: updateError } = await supabase
+            .from('projects')
+            .update({ updated_at: new Date().toISOString() })
+            .eq('id', projectId)
+          if (updateError) throw updateError
+        } else {
+          throw error
+        }
+      }
     } else {
       // Create new project
       const { data: newProject, error: projectError } = await supabase
@@ -39,10 +113,15 @@ export const saveProject = async (projectName, files, userId) => {
     }
 
     // Delete existing files for this project
-    await supabase
+    const { error: deleteError } = await supabase
       .from('project_files')
       .delete()
       .eq('project_id', projectId)
+
+    if (deleteError) {
+      console.warn('Warning: Error deleting existing files (non-fatal):', deleteError)
+      // Continue anyway - we'll try to insert/update
+    }
 
     // Insert/update all files
     const fileInserts = files.map((file) => ({
@@ -56,7 +135,25 @@ export const saveProject = async (projectName, files, userId) => {
       .from('project_files')
       .insert(fileInserts)
 
-    if (filesError) throw filesError
+    if (filesError) {
+      // If it's a conflict error, try deleting and re-inserting
+      if (filesError.code === '23505' || filesError.message?.includes('duplicate') || filesError.message?.includes('409')) {
+        console.log('Conflict detected, retrying file insert after delete...')
+        // Delete again and retry
+        await supabase
+          .from('project_files')
+          .delete()
+          .eq('project_id', projectId)
+        
+        const { error: retryError } = await supabase
+          .from('project_files')
+          .insert(fileInserts)
+        
+        if (retryError) throw retryError
+      } else {
+        throw filesError
+      }
+    }
 
     return { success: true, projectId }
   } catch (error) {
@@ -107,19 +204,39 @@ export const loadProject = async (projectName, userId) => {
 }
 
 /**
- * List all projects for a user
+ * List all projects for a user with file counts
  */
 export const listProjects = async (userId) => {
   try {
+    // Add cache busting to ensure we get fresh data
+    // Try to include deleted_at if the column exists
     const { data: projects, error } = await supabase
       .from('projects')
-      .select('id, name, created_at, updated_at')
+      .select('id, name, created_at, updated_at, deleted_at')
       .eq('user_id', userId)
       .order('updated_at', { ascending: false })
 
     if (error) throw error
+    
+    // Filter out any null or invalid projects
+    const validProjects = (projects || []).filter(p => p && p.id && p.name)
 
-    return projects
+    // Get file count for each project
+    const projectsWithFileCount = await Promise.all(
+      validProjects.map(async (project) => {
+        const { count, error: countError } = await supabase
+          .from('project_files')
+          .select('*', { count: 'exact', head: true })
+          .eq('project_id', project.id)
+        
+        return {
+          ...project,
+          fileCount: countError ? 0 : (count || 0)
+        }
+      })
+    )
+
+    return projectsWithFileCount
   } catch (error) {
     console.error('Error listing projects:', error)
     throw error
@@ -147,6 +264,196 @@ export const saveTextChanges = async (projectId, fileName, elementSelector, oldT
     return { success: true }
   } catch (error) {
     console.error('Error saving text changes:', error)
+    throw error
+  }
+}
+
+/**
+ * Restore a project from Recently Deleted (clear deleted_at timestamp)
+ * Note: This requires a deleted_at column in the projects table
+ * If the column doesn't exist, this will fail gracefully
+ */
+export const restoreProject = async (projectId, userId) => {
+  try {
+    console.log('♻️ Restoring project:', projectId, 'user:', userId)
+    const { data, error } = await supabase
+      .from('projects')
+      .update({ 
+        deleted_at: null, // Clear deleted_at to restore the project
+        updated_at: new Date().toISOString() 
+      })
+      .eq('id', projectId)
+      .eq('user_id', userId)
+
+    if (error) {
+      // If deleted_at column doesn't exist, just log a warning and continue
+      if (error.message && error.message.includes('deleted_at')) {
+        console.warn('⚠️ deleted_at column not found in database. Restore will only work locally.')
+        // Still update updated_at
+        const { error: updateError } = await supabase
+          .from('projects')
+          .update({ updated_at: new Date().toISOString() })
+          .eq('id', projectId)
+          .eq('user_id', userId)
+        if (updateError) throw updateError
+        console.log('✅ Project updated (restore column not available):', projectId)
+        return { success: true }
+      }
+      throw error
+    }
+    console.log('✅ Project restored successfully:', projectId)
+    return { success: true }
+  } catch (error) {
+    console.error('❌ Error restoring project:', error)
+    throw error
+  }
+}
+
+/**
+ * Soft delete a project (set deleted_at timestamp)
+ * Note: This requires a deleted_at column in the projects table
+ * If the column doesn't exist, this will fail gracefully
+ */
+export const softDeleteProject = async (projectId, userId) => {
+  try {
+    console.log('🗑️ Soft deleting project:', projectId, 'user:', userId)
+    const { data, error } = await supabase
+      .from('projects')
+      .update({ deleted_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+      .eq('id', projectId)
+      .eq('user_id', userId)
+
+    if (error) {
+      // If deleted_at column doesn't exist, just log a warning and continue
+      // The project will still be moved to Recently Deleted locally
+      if (error.message && error.message.includes('deleted_at')) {
+        console.warn('⚠️ deleted_at column not found in database. Soft delete will only work locally.')
+        // Still update updated_at
+        const { error: updateError } = await supabase
+          .from('projects')
+          .update({ updated_at: new Date().toISOString() })
+          .eq('id', projectId)
+          .eq('user_id', userId)
+        if (updateError) throw updateError
+        console.log('✅ Project updated (soft delete column not available):', projectId)
+        return { success: true }
+      }
+      throw error
+    }
+    console.log('✅ Project soft deleted successfully:', projectId)
+    return { success: true }
+  } catch (error) {
+    console.error('❌ Error soft deleting project:', error)
+    throw error
+  }
+}
+
+/**
+ * Delete a project from Supabase
+ * Deletes from ALL tables: project_files, text_changes, and projects
+ */
+export const deleteProject = async (projectId, userId) => {
+  try {
+    console.log('🗑️ Starting delete process for project:', projectId, 'user:', userId)
+    
+    // Verify the project belongs to the user
+    const { data: project, error: verifyError } = await supabase
+      .from('projects')
+      .select('id, user_id, name')
+      .eq('id', projectId)
+      .eq('user_id', userId)
+      .single()
+
+    if (verifyError || !project) {
+      console.error('❌ Project verification failed:', verifyError)
+      throw new Error('Project not found or access denied')
+    }
+
+    console.log('✅ Project verified:', project.name)
+
+    // Step 1: Delete all files for this project
+    console.log('Deleting project_files...')
+    const { error: filesError, count: filesDeleted } = await supabase
+      .from('project_files')
+      .delete()
+      .eq('project_id', projectId)
+      .select()
+
+    if (filesError) {
+      console.error('❌ Error deleting project_files:', filesError)
+      throw filesError
+    }
+    console.log('✅ Deleted project_files')
+
+    // Step 2: Delete text changes for this project
+    console.log('Deleting text_changes...')
+    const { error: textChangesError } = await supabase
+      .from('text_changes')
+      .delete()
+      .eq('project_id', projectId)
+
+    if (textChangesError) {
+      console.warn('⚠️ Warning: Error deleting text_changes (non-fatal):', textChangesError)
+      // Continue even if text changes deletion fails
+    } else {
+      console.log('✅ Deleted text_changes')
+    }
+
+    // Step 3: Delete the project itself
+    console.log('Deleting project record...')
+    const { error: projectError } = await supabase
+      .from('projects')
+      .delete()
+      .eq('id', projectId)
+
+    if (projectError) {
+      console.error('❌ Error deleting project:', projectError)
+      throw projectError
+    }
+    console.log('✅ Deleted project record')
+
+    // Step 4: Verify deletion (with retry for eventual consistency)
+    // Note: Supabase may have replication delay, so we retry a few times
+    console.log('Verifying deletion...')
+    let verified = false
+    let attempts = 0
+    const maxAttempts = 3
+    
+    while (!verified && attempts < maxAttempts) {
+      attempts++
+      const { data: verifyDeleted, error: verifyDeleteError } = await supabase
+        .from('projects')
+        .select('id')
+        .eq('id', projectId)
+        .maybeSingle()
+
+      if (verifyDeleteError) {
+        console.warn(`⚠️ Verification attempt ${attempts} failed (non-fatal):`, verifyDeleteError)
+        // Wait before retry
+        if (attempts < maxAttempts) {
+          await new Promise(resolve => setTimeout(resolve, 500))
+        }
+      } else if (verifyDeleted) {
+        console.warn(`⚠️ Project still exists after deletion (attempt ${attempts}/${maxAttempts})`)
+        // Wait before retry
+        if (attempts < maxAttempts) {
+          await new Promise(resolve => setTimeout(resolve, 500))
+        }
+      } else {
+        verified = true
+        console.log('✅ Deletion verified - project no longer exists')
+      }
+    }
+    
+    if (!verified) {
+      console.warn('⚠️ Could not verify deletion after', maxAttempts, 'attempts, but delete operations completed successfully')
+      console.warn('⚠️ This may be due to Supabase replication delay. The project should be deleted.')
+    }
+
+    console.log('✅ Successfully deleted project from ALL tables:', projectId, project.name)
+    return { success: true }
+  } catch (error) {
+    console.error('❌ Error deleting project:', error)
     throw error
   }
 }

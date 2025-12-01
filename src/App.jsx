@@ -88,10 +88,19 @@ function App() {
     console.log('findNextAvailableProjectName: All projects from DB:', allProjects.map(p => ({ name: p.name, deletedAt: p.deletedAt })))
     
     // Only check active projects (not deleted ones)
-    // deletedAt will be null or undefined for active projects, or a timestamp string for deleted ones
+    // deletedAt will be null/undefined/empty string for active projects, or a timestamp string for deleted ones
     const activeProjects = allProjects.filter(p => {
-      const isActive = !p.deletedAt || p.deletedAt === null || p.deletedAt === undefined
-      return isActive
+      // Check both camelCase and snake_case property names
+      const deletedAt = p.deletedAt || p.deleted_at
+      // A project is active if deletedAt is null, undefined, empty string, or falsy
+      // A timestamp string (ISO date) means it's deleted
+      const isDeleted = deletedAt && (
+        deletedAt !== null && 
+        deletedAt !== undefined && 
+        deletedAt !== '' &&
+        (typeof deletedAt === 'string' && deletedAt.length > 0 && !isNaN(Date.parse(deletedAt)))
+      )
+      return !isDeleted
     })
     console.log('findNextAvailableProjectName: Active projects:', activeProjects.map(p => p.name))
     
@@ -160,17 +169,74 @@ function App() {
         // Get fresh list from database to ensure we have the latest projects
         const { listProjects } = await import('./services/projectService')
         const allProjects = await listProjects(user.id)
-        console.log('saveProjectToAllProjects: Checking for duplicate. All projects:', allProjects.map(p => ({ name: p.name, deletedAt: p.deletedAt })))
+        console.log('saveProjectToAllProjects: Checking for duplicate. All projects:', allProjects.map(p => ({ name: p.name, deletedAt: p.deletedAt, deleted_at: p.deleted_at })))
+        
+        // Also check recently deleted projects from localStorage as a fallback
+        // This ensures we don't count projects that are in "Recently Deleted" even if deleted_at isn't set in DB
+        let deletedProjectIds = new Set()
+        try {
+          const deletedStored = localStorage.getItem('vibecanvas_recently_deleted_projects')
+          if (deletedStored) {
+            const deletedData = JSON.parse(deletedStored)
+            if (Array.isArray(deletedData)) {
+              deletedData.forEach(deleted => {
+                if (deleted.projectId) {
+                  deletedProjectIds.add(deleted.projectId)
+                }
+              })
+            }
+          }
+        } catch (e) {
+          console.error('Error reading recently deleted from localStorage:', e)
+        }
+        console.log('saveProjectToAllProjects: Deleted project IDs from localStorage:', Array.from(deletedProjectIds))
         
         // Only check active projects (not deleted ones)
-        // deletedAt will be null or undefined for active projects, or a timestamp string for deleted ones
+        // deletedAt will be null/undefined/empty string for active projects, or a timestamp string for deleted ones
         const activeProjects = allProjects.filter(p => {
-          const isActive = !p.deletedAt || p.deletedAt === null || p.deletedAt === undefined
+          // Check both camelCase and snake_case property names (Supabase converts to camelCase, but be safe)
+          const deletedAt = p.deletedAt || p.deleted_at
+          
+          // Debug logging for the project we're checking
+          if (p.name === projectName) {
+            console.log('🔍 Checking project for duplicate:', {
+              name: p.name,
+              projectId: p.id,
+              deletedAt: deletedAt,
+              deletedAtType: typeof deletedAt,
+              isNull: deletedAt === null,
+              isUndefined: deletedAt === undefined,
+              isEmpty: deletedAt === '',
+              canParse: deletedAt && typeof deletedAt === 'string' ? !isNaN(Date.parse(deletedAt)) : false,
+              isInDeletedList: deletedProjectIds.has(p.id)
+            })
+          }
+          
+          // A project is deleted if:
+          // 1. It has a valid deletedAt timestamp (ISO date string)
+          // 2. OR its projectId is in the recently deleted list from localStorage
+          const hasDeletedTimestamp = deletedAt && (
+            deletedAt !== null && 
+            deletedAt !== undefined && 
+            deletedAt !== '' &&
+            (typeof deletedAt === 'string' && deletedAt.length > 0 && !isNaN(Date.parse(deletedAt)))
+          )
+          const isInDeletedList = p.id && deletedProjectIds.has(p.id)
+          const isDeleted = hasDeletedTimestamp || isInDeletedList
+          const isActive = !isDeleted
+          
+          if (!isActive) {
+            console.log('✅ Filtering out deleted project:', p.name, {
+              hasDeletedTimestamp,
+              isInDeletedList,
+              deletedAt
+            })
+          }
           return isActive
         })
         console.log('saveProjectToAllProjects: Active projects:', activeProjects.map(p => p.name))
-        
-        const existingProject = activeProjects.find(p => p.name === projectName)
+        console.log('saveProjectToAllProjects: Filtered out', allProjects.length - activeProjects.length, 'deleted projects')
+        console.log('saveProjectToAllProjects: Checking for project name:', projectName)
         
         // Skip duplicate check if we just saved this exact name (prevents modal from appearing twice)
         if (lastSavedNameRef.current === projectName) {
@@ -179,7 +245,41 @@ function App() {
           lastSavedNameRef.current = null
         }
         
+        // Find active project with matching name (with final safety check)
+        const existingProject = activeProjects.find(p => {
+          if (p.name !== projectName) return false
+          
+          // Final safety check: double-verify this project is actually active
+          const pDeletedAt = p.deletedAt || p.deleted_at
+          const pHasDeletedTimestamp = pDeletedAt && (
+            pDeletedAt !== null && 
+            pDeletedAt !== undefined && 
+            pDeletedAt !== '' &&
+            (typeof pDeletedAt === 'string' && pDeletedAt.length > 0 && !isNaN(Date.parse(pDeletedAt)))
+          )
+          const pIsInDeletedList = p.id && deletedProjectIds.has(p.id)
+          
+          const isActuallyActive = !pHasDeletedTimestamp && !pIsInDeletedList
+          
+          if (!isActuallyActive) {
+            console.log('⚠️ Project found but it\'s deleted - skipping:', p.name, {
+              hasDeletedTimestamp: pHasDeletedTimestamp,
+              isInDeletedList: pIsInDeletedList,
+              deletedAt: pDeletedAt
+            })
+          }
+          
+          return isActuallyActive
+        })
+        
+        console.log('saveProjectToAllProjects: existingProject found:', existingProject ? {
+          name: existingProject.name,
+          id: existingProject.id,
+          deletedAt: existingProject.deletedAt || existingProject.deleted_at
+        } : null)
+        
         if (existingProject && lastSavedNameRef.current !== projectName) {
+          console.log('⚠️ DUPLICATE FOUND - showing modal for:', projectName, 'existing project:', existingProject)
           // Project with same name exists - force user to rename
           // Don't clear pendingNavigation - we need to preserve it for after the save
           // Just hide the save prompt while showing duplicate name modal
@@ -227,9 +327,37 @@ function App() {
             // Re-check if the new name exists (in case it was added between the check and now)
             const { listProjects: recheckListProjects } = await import('./services/projectService')
             const recheckProjects = await recheckListProjects(user.id)
+            
+            // Also check recently deleted projects from localStorage
+            let recheckDeletedIds = new Set()
+            try {
+              const deletedStored = localStorage.getItem('vibecanvas_recently_deleted_projects')
+              if (deletedStored) {
+                const deletedData = JSON.parse(deletedStored)
+                if (Array.isArray(deletedData)) {
+                  deletedData.forEach(deleted => {
+                    if (deleted.projectId) {
+                      recheckDeletedIds.add(deleted.projectId)
+                    }
+                  })
+                }
+              }
+            } catch (e) {
+              // Ignore errors
+            }
+            
             const recheckActiveProjects = recheckProjects.filter(p => {
-              const isActive = !p.deletedAt || p.deletedAt === null || p.deletedAt === undefined
-              return isActive
+              // Check both camelCase and snake_case property names
+              const deletedAt = p.deletedAt || p.deleted_at
+              // A project is deleted if it has a valid deletedAt timestamp OR is in deleted list
+              const hasDeletedTimestamp = deletedAt && (
+                deletedAt !== null && 
+                deletedAt !== undefined && 
+                deletedAt !== '' &&
+                (typeof deletedAt === 'string' && deletedAt.length > 0 && !isNaN(Date.parse(deletedAt)))
+              )
+              const isInDeletedList = p.id && recheckDeletedIds.has(p.id)
+              return !hasDeletedTimestamp && !isInDeletedList
             })
             const recheckExists = recheckActiveProjects.find(p => p.name === finalProjectName)
             if (recheckExists) {
@@ -905,10 +1033,37 @@ function App() {
     const { listProjects } = await import('./services/projectService')
     const allProjects = await listProjects(user.id)
     
-    // Only check active projects (not deleted ones)
+    // Also check recently deleted projects from localStorage as a fallback
+    let deletedProjectIds = new Set()
+    try {
+      const deletedStored = localStorage.getItem('vibecanvas_recently_deleted_projects')
+      if (deletedStored) {
+        const deletedData = JSON.parse(deletedStored)
+        if (Array.isArray(deletedData)) {
+          deletedData.forEach(deleted => {
+            if (deleted.projectId) {
+              deletedProjectIds.add(deleted.projectId)
+            }
+          })
+        }
+      }
+    } catch (e) {
+      // Ignore errors
+    }
+    
+    // Only check active projects (not deleted ones) - use same robust filtering as saveProjectToAllProjects
     const activeProjects = allProjects.filter(p => {
-      const isActive = !p.deletedAt || p.deletedAt === null || p.deletedAt === undefined
-      return isActive
+      // Check both camelCase and snake_case property names
+      const deletedAt = p.deletedAt || p.deleted_at
+      // A project is deleted if it has a valid deletedAt timestamp OR is in deleted list
+      const hasDeletedTimestamp = deletedAt && (
+        deletedAt !== null && 
+        deletedAt !== undefined && 
+        deletedAt !== '' &&
+        (typeof deletedAt === 'string' && deletedAt.length > 0 && !isNaN(Date.parse(deletedAt)))
+      )
+      const isInDeletedList = p.id && deletedProjectIds.has(p.id)
+      return !hasDeletedTimestamp && !isInDeletedList
     })
     
     const existingProject = activeProjects.find(p => p.name === projectName)
@@ -957,9 +1112,37 @@ function App() {
       // Re-check if the new name exists (in case it was added between the check and now)
       const { listProjects: recheckListProjects } = await import('./services/projectService')
       const recheckProjects = await recheckListProjects(user.id)
+      
+      // Also check recently deleted projects from localStorage
+      let recheckDeletedIds = new Set()
+      try {
+        const deletedStored = localStorage.getItem('vibecanvas_recently_deleted_projects')
+        if (deletedStored) {
+          const deletedData = JSON.parse(deletedStored)
+          if (Array.isArray(deletedData)) {
+            deletedData.forEach(deleted => {
+              if (deleted.projectId) {
+                recheckDeletedIds.add(deleted.projectId)
+              }
+            })
+          }
+        }
+      } catch (e) {
+        // Ignore errors
+      }
+      
       const recheckActiveProjects = recheckProjects.filter(p => {
-        const isActive = !p.deletedAt || p.deletedAt === null || p.deletedAt === undefined
-        return isActive
+        // Check both camelCase and snake_case property names
+        const deletedAt = p.deletedAt || p.deleted_at
+        // A project is deleted if it has a valid deletedAt timestamp OR is in deleted list
+        const hasDeletedTimestamp = deletedAt && (
+          deletedAt !== null && 
+          deletedAt !== undefined && 
+          deletedAt !== '' &&
+          (typeof deletedAt === 'string' && deletedAt.length > 0 && !isNaN(Date.parse(deletedAt)))
+        )
+        const isInDeletedList = p.id && recheckDeletedIds.has(p.id)
+        return !hasDeletedTimestamp && !isInDeletedList
       })
       const recheckExists = recheckActiveProjects.find(p => p.name === userChoice.name)
       if (recheckExists) {
