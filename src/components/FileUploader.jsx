@@ -1,6 +1,7 @@
 import { useRef, useState, useEffect, useMemo, Fragment } from 'react'
 import { useAuth } from '../contexts/AuthContext'
-import { listProjects, loadProject, deleteProject, softDeleteProject, restoreProject } from '../services/projectService'
+import { listProjects, loadProject, loadProjectById, deleteProject, softDeleteProject, restoreProject } from '../services/projectService'
+import AuthModal from './AuthModal'
 import './FileUploader.css'
 
 function FileUploader({ onProjectLoad }) {
@@ -190,11 +191,19 @@ function FileUploader({ onProjectLoad }) {
       localStorage.removeItem('vibecanvas_all_projects_cache')
     }
   }, [allProjects, user])
-  const [isLogin, setIsLogin] = useState(true)
-  const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
-  const [authError, setAuthError] = useState('')
-  const [authLoading, setAuthLoading] = useState(false)
+  const [showAuthModal, setShowAuthModal] = useState(false)
+  const [fileTypeModal, setFileTypeModal] = useState({ 
+    show: false, 
+    files: [], 
+    compatibleFiles: [], 
+    incompatibleFiles: [], 
+    excludedFiles: [], 
+    totalSize: 0,
+    fileCount: 0,
+    limitViolations: null,
+    onContinue: null, 
+    onCancel: null 
+  })
   
   // Check for deleted_at column on mount and show migration notice if needed
   useEffect(() => {
@@ -607,40 +616,165 @@ function FileUploader({ onProjectLoad }) {
   // Removed saveToRecentProjects, openRecentProject, removeRecentProject - no longer needed
   // Projects are now only loaded from file system
 
-  const handleAuthSubmit = async (e) => {
-    e.preventDefault()
-    setAuthError('')
-    setAuthLoading(true)
+  const handleSignOut = async () => {
+    await signOut()
+  }
 
-    try {
-      if (isLogin) {
-        const { error } = await signIn(email, password)
-        if (error) throw error
-        // Clear form on success
-        setEmail('')
-        setPassword('')
-      } else {
-        const { error } = await signUp(email, password)
-        if (error) throw error
-        // Clear form on success - user is automatically logged in
-        setEmail('')
-        setPassword('')
+  // Helper function to check if file should be excluded
+  const shouldExcludeFile = (filePath) => {
+    const excludePatterns = [
+      'node_modules',
+      '.git',
+      'dist',
+      'build',
+      '.next',
+      '.vscode',
+      '.idea',
+      '__pycache__',
+      '.DS_Store',
+      'package-lock.json',
+      'yarn.lock',
+      'pnpm-lock.yaml'
+    ]
+    
+    const path = filePath.toLowerCase()
+    return excludePatterns.some(pattern => path.includes(pattern))
+  }
+
+  // Rule-based file handling constants (based on known working projects)
+  const MAX_FILE_SIZE = 10 * 1024 * 1024 // 10MB per file
+  const MAX_IMAGE_SIZE = 5 * 1024 * 1024 // 5MB per image
+  const MAX_COMPATIBLE_FILES_WARNING = 100 // Warn at 100 files
+  const MAX_COMPATIBLE_FILES_HARD_LIMIT = 200 // Hard limit at 200 files
+  const MAX_TOTAL_SIZE_WARNING = 50 * 1024 * 1024 // 50MB total warning
+  const MAX_TOTAL_SIZE_HARD_LIMIT = 100 * 1024 * 1024 // 100MB total hard limit
+  const supportedExtensions = ['.html', '.css', '.js', '.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg']
+
+  // Helper function to detect file types and compatibility
+  const detectFileTypes = (files) => {
+    const compatibleFiles = []
+    const incompatibleFiles = []
+    const excludedFiles = []
+    
+    const maxFileSize = MAX_FILE_SIZE
+    const maxImageSize = MAX_IMAGE_SIZE
+    
+    for (const file of files) {
+      const fileName = file.name.toLowerCase()
+      const filePath = file.webkitRelativePath || file.name
+      const extension = fileName.includes('.') ? '.' + fileName.split('.').pop() : ''
+      
+      // Exclude files from common directories that shouldn't be loaded
+      if (shouldExcludeFile(filePath)) {
+        excludedFiles.push({
+          name: file.name,
+          size: file.size,
+          type: extension ? extension.substring(1).toUpperCase() : 'UNKNOWN',
+          reason: 'Excluded directory (node_modules, .git, etc.)'
+        })
+        continue
       }
-    } catch (err) {
-      setAuthError(err.message)
-    } finally {
-      setAuthLoading(false)
+      
+      const isCompatible = supportedExtensions.includes(extension)
+      const isImage = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg'].includes(extension)
+      const maxSize = isImage ? maxImageSize : maxFileSize
+      const isTooLarge = file.size > maxSize
+      
+      const fileInfo = {
+        name: file.name,
+        size: file.size,
+        type: extension ? extension.substring(1).toUpperCase() : 'UNKNOWN',
+        isCompatible: isCompatible && !isTooLarge,
+        isTooLarge,
+        warning: isTooLarge ? (isImage ? 'Image too large (>5MB)' : 'File too large (>10MB)') : null
+      }
+      
+      if (isCompatible && !isTooLarge) {
+        compatibleFiles.push(fileInfo)
+      } else if (isCompatible && isTooLarge) {
+        incompatibleFiles.push({ ...fileInfo, reason: fileInfo.warning })
+      } else {
+        incompatibleFiles.push(fileInfo)
+      }
+    }
+    
+    // Calculate total size of compatible files
+    const totalSize = compatibleFiles.reduce((sum, file) => sum + file.size, 0)
+    const fileCount = compatibleFiles.length
+    
+    // Check for limit violations
+    const limitViolations = {
+      fileCountWarning: fileCount > MAX_COMPATIBLE_FILES_WARNING && fileCount <= MAX_COMPATIBLE_FILES_HARD_LIMIT,
+      fileCountExceeded: fileCount > MAX_COMPATIBLE_FILES_HARD_LIMIT,
+      totalSizeWarning: totalSize > MAX_TOTAL_SIZE_WARNING && totalSize <= MAX_TOTAL_SIZE_HARD_LIMIT,
+      totalSizeExceeded: totalSize > MAX_TOTAL_SIZE_HARD_LIMIT,
+      canProceed: fileCount <= MAX_COMPATIBLE_FILES_HARD_LIMIT && totalSize <= MAX_TOTAL_SIZE_HARD_LIMIT
+    }
+    
+    return { 
+      compatibleFiles, 
+      incompatibleFiles, 
+      excludedFiles,
+      totalSize,
+      fileCount,
+      limitViolations
     }
   }
 
-  const handleSignOut = async () => {
-    await signOut()
-    setEmail('')
-    setPassword('')
-    setAuthError('')
+  const readFiles = async (files, isFolder = true, fromAllProjects = false) => {
+    // First, detect file types (only show modal on first open, not from All Projects)
+    if (!fromAllProjects) {
+      const { compatibleFiles, incompatibleFiles, excludedFiles, totalSize, fileCount, limitViolations } = detectFileTypes(files)
+      
+      // Show modal if there are any files (compatible or incompatible)
+      if (files.length > 0) {
+        return new Promise((resolve) => {
+          setFileTypeModal({
+            show: true,
+            files: files,
+            compatibleFiles,
+            incompatibleFiles,
+            excludedFiles,
+            totalSize,
+            fileCount,
+            limitViolations,
+            onContinue: async () => {
+              // Prevent continue if hard limits are exceeded
+              if (!limitViolations.canProceed) {
+                alert(`Cannot proceed: Project exceeds limits.\n\n` +
+                      `File count: ${fileCount} (max: ${MAX_COMPATIBLE_FILES_HARD_LIMIT})\n` +
+                      `Total size: ${(totalSize / 1024 / 1024).toFixed(1)}MB (max: ${MAX_TOTAL_SIZE_HARD_LIMIT / 1024 / 1024}MB)\n\n` +
+                      `Please select a smaller subset of files.`)
+                return
+              }
+              
+              setFileTypeModal({ show: false, files: [], compatibleFiles: [], incompatibleFiles: [], excludedFiles: [], onContinue: null, onCancel: null, totalSize: 0, fileCount: 0, limitViolations: null })
+              // Continue with only compatible files (excluding large files and excluded directories)
+              const compatibleFileObjects = files.filter(file => {
+                const fileName = file.name.toLowerCase()
+                const filePath = file.webkitRelativePath || file.name
+                // Exclude files from node_modules, .git, etc.
+                if (shouldExcludeFile(filePath)) return false
+                // Only include files that are in compatibleFiles list
+                return compatibleFiles.some(cf => cf.name === file.name && !cf.isTooLarge)
+              })
+              await processFiles(compatibleFileObjects, isFolder)
+              resolve()
+            },
+            onCancel: () => {
+              setFileTypeModal({ show: false, files: [], compatibleFiles: [], incompatibleFiles: [], excludedFiles: [], onContinue: null, onCancel: null, totalSize: 0, fileCount: 0, limitViolations: null })
+              resolve()
+            }
+          })
+        })
+      }
+    }
+    
+    // If from All Projects, process directly without modal
+    await processFiles(files, isFolder)
   }
 
-  const readFiles = async (files, isFolder = true) => {
+  const processFiles = async (files, isFolder = true) => {
     const projectFiles = []
     
     console.log('FileUploader: Reading files', {
@@ -648,24 +782,57 @@ function FileUploader({ onProjectLoad }) {
       fileNames: Array.from(files).map(f => f.name)
     })
     
+    // Enforce rule-based limits
+    let totalSize = 0
+    let processedCount = 0
+    
     for (const file of files) {
-      const isTextFile = file.name.endsWith('.html') ||
-                        file.name.endsWith('.css') ||
-                        file.name.endsWith('.js');
+      // Skip excluded directories
+      const filePath = file.webkitRelativePath || file.name
+      if (shouldExcludeFile(filePath)) {
+        console.log(`Skipping file from excluded directory: ${file.name}`)
+        continue
+      }
       
-      const isImageFile = file.name.endsWith('.jpg') ||
-                         file.name.endsWith('.jpeg') ||
-                         file.name.endsWith('.png') ||
-                         file.name.endsWith('.gif') ||
-                         file.name.endsWith('.webp') ||
-                         file.name.endsWith('.svg');
+      // Check file count limit
+      if (processedCount >= MAX_COMPATIBLE_FILES_HARD_LIMIT) {
+        console.warn(`Reached file count limit (${MAX_COMPATIBLE_FILES_HARD_LIMIT}). Stopping processing.`)
+        break
+      }
       
-      if (isTextFile || isImageFile) {
+      // Check file extension
+      const fileName = file.name.toLowerCase()
+      const extension = fileName.includes('.') ? '.' + fileName.split('.').pop() : ''
+      const isCompatible = supportedExtensions.includes(extension)
+      
+      if (!isCompatible) {
+        console.log(`Skipping file: ${file.name} (not supported file type)`)
+        continue
+      }
+      
+      // Check file size limits
+      const isImage = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg'].includes(extension)
+      const maxSize = isImage ? MAX_IMAGE_SIZE : MAX_FILE_SIZE
+      
+      if (file.size > maxSize) {
+        console.log(`Skipping file: ${file.name} (too large: ${(file.size / 1024 / 1024).toFixed(1)}MB, max: ${maxSize / 1024 / 1024}MB)`)
+        continue
+      }
+      
+      // Check total size limit
+      if (totalSize + file.size > MAX_TOTAL_SIZE_HARD_LIMIT) {
+        console.warn(`Reached total size limit (${MAX_TOTAL_SIZE_HARD_LIMIT / 1024 / 1024}MB). Stopping processing.`)
+        break
+      }
+      
+      const isTextFile = extension === '.html' || extension === '.css' || extension === '.js'
+      
+      if (isTextFile || isImage) {
         try {
           let content;
           let dataUrl = null;
           
-          if (isImageFile) {
+          if (isImage) {
             // Convert image to base64 data URL for persistence across page reloads
             // Using FileReader for proper base64 encoding
             dataUrl = await new Promise((resolve, reject) => {
@@ -692,15 +859,18 @@ function FileUploader({ onProjectLoad }) {
             path: file.webkitRelativePath || file.name,
             content: content,
             type: fileType,
-            isImage: isImageFile,
+            isImage: isImage,
             dataUrl: dataUrl
           })
-          console.log(`Loaded file: ${file.name} (${isImageFile ? 'image' : content.length + ' chars'})`)
+          
+          // Update counters
+          totalSize += file.size
+          processedCount++
+          
+          console.log(`Loaded file: ${file.name} (${isImage ? 'image' : content.length + ' chars'})`)
         } catch (error) {
           console.error(`Error reading file ${file.name}:`, error)
         }
-      } else {
-        console.log(`Skipping file: ${file.name} (not supported file type)`)
       }
     }
     
@@ -777,7 +947,7 @@ function FileUploader({ onProjectLoad }) {
     })
     
     // Drag and drop is typically individual files, not folders
-    await readFiles(files, false)
+    await readFiles(files, false, false) // false = not from All Projects
   }
 
   const handleDragOver = (e) => {
@@ -792,12 +962,12 @@ function FileUploader({ onProjectLoad }) {
 
   const handleFolderSelect = async (e) => {
     const files = Array.from(e.target.files)
-    await readFiles(files, true) // true = isFolder
+    await readFiles(files, true, false) // true = isFolder, false = not from All Projects
   }
 
   const handleFileSelect = async (e) => {
     const files = Array.from(e.target.files)
-    await readFiles(files, false) // false = isFolder (individual files)
+    await readFiles(files, false, false) // false = isFolder (individual files), false = not from All Projects
   }
 
   const formatDate = (dateString) => {
@@ -842,14 +1012,14 @@ function FileUploader({ onProjectLoad }) {
             ) : (
               <button 
                 className="open-project-button"
-                onClick={() => folderInputRef.current?.click()}
+                onClick={() => setShowAuthModal(true)}
               >
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                  <polyline points="17 8 12 3 7 8" />
-                  <line x1="12" y1="3" x2="12" y2="15" />
+                  <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" />
+                  <polyline points="10 17 15 12 10 7" />
+                  <line x1="15" y1="12" x2="3" y2="12" />
                 </svg>
-                Open Project
+                Sign In
               </button>
             )}
           </div>
@@ -1123,8 +1293,13 @@ function FileUploader({ onProjectLoad }) {
                                 }
                                 
                                 try {
-                                  // Load project from user account (Supabase)
-                                  const projectData = await loadProject(project.name, user.id)
+                                  // Load project from user account (Supabase) by ID for reliability
+                                  if (!project.projectId) {
+                                    console.error('Project ID missing, cannot load project:', project)
+                                    alert('Error: Project ID missing. Cannot load project.')
+                                    return
+                                  }
+                                  const projectData = await loadProjectById(project.projectId, user.id)
                                   
                                   // Convert to format expected by onProjectLoad
                                   const files = projectData.files.map(file => {
@@ -1343,81 +1518,167 @@ function FileUploader({ onProjectLoad }) {
               ) : null}
             </div>
 
-            {/* Auth Section */}
-            {!user && (
-            <div className="auth-section">
-              <div className="auth-form-container">
-                  <h3 className="auth-form-title">{isLogin ? 'Sign In' : 'Sign Up'}</h3>
-                  {authError && (
-                    <div className="auth-error">
-                      {authError}
-                    </div>
-                  )}
-                  <form onSubmit={handleAuthSubmit} className="auth-form">
-                    <div className="auth-form-group">
-                      <label htmlFor="auth-email">Email</label>
-                      <input
-                        id="auth-email"
-                        type="email"
-                        value={email}
-                        onChange={(e) => setEmail(e.target.value)}
-                        required
-                        disabled={authLoading}
-                        placeholder="your@email.com"
-                      />
-                    </div>
-                    <div className="auth-form-group">
-                      <label htmlFor="auth-password">Password</label>
-                      <input
-                        id="auth-password"
-                        type="password"
-                        value={password}
-                        onChange={(e) => setPassword(e.target.value)}
-                        required
-                        disabled={authLoading}
-                        placeholder="••••••••"
-                        minLength={6}
-                      />
-                    </div>
-                    <button 
-                      type="submit" 
-                      disabled={authLoading} 
-                      className="auth-submit-button"
-                    >
-                      {authLoading ? 'Loading...' : (isLogin ? 'Sign In' : 'Sign Up')}
-                    </button>
-                  </form>
-                  <div className="auth-toggle">
-                    {isLogin ? (
-                      <>
-                        Don't have an account?{' '}
-                        <button 
-                          onClick={() => {
-                            setIsLogin(false)
-                            setAuthError('')
-                          }} 
-                          className="auth-link"
-                        >
-                          Sign up
-                        </button>
-                      </>
-                    ) : (
-                      <>
-                        Already have an account?{' '}
-                        <button 
-                          onClick={() => {
-                            setIsLogin(true)
-                            setAuthError('')
-                          }} 
-                          className="auth-link"
-                        >
-                          Sign in
-                        </button>
-                      </>
+            {/* Auth Modal */}
+            {showAuthModal && <AuthModal onClose={() => setShowAuthModal(false)} />}
+
+            {/* File Type Detection Modal */}
+            {fileTypeModal.show && (
+              <div className="file-type-modal-overlay" onClick={() => fileTypeModal.onCancel?.()}>
+                <div className="file-type-modal" onClick={(e) => e.stopPropagation()}>
+                  <div className="file-type-modal-header">
+                    <h3>File Type Detection</h3>
+                  </div>
+                  <div className="file-type-modal-body">
+                    <p>We detected the following files:</p>
+                    
+                    {fileTypeModal.excludedFiles.length > 0 && (
+                      <div className="file-type-section">
+                        <h4 className="file-type-excluded">
+                          🚫 Excluded ({fileTypeModal.excludedFiles.length})
+                        </h4>
+                        <p className="file-type-info">
+                          Files from node_modules, .git, dist, build, and other excluded directories are automatically excluded.
+                        </p>
+                        {fileTypeModal.excludedFiles.length <= 20 && (
+                          <ul className="file-type-list excluded">
+                            {fileTypeModal.excludedFiles.map((file, idx) => (
+                              <li key={idx}>
+                                <span className="file-name">{file.name}</span>
+                                <span className="file-type-badge">{file.type}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                        {fileTypeModal.excludedFiles.length > 20 && (
+                          <p className="file-type-info">
+                            ({fileTypeModal.excludedFiles.length} files excluded - too many to list)
+                          </p>
+                        )}
+                      </div>
+                    )}
+                    
+                    {fileTypeModal.compatibleFiles.length > 0 && (
+                      <div className="file-type-section">
+                        <h4 className="file-type-compatible">
+                          ✅ Compatible Files ({fileTypeModal.compatibleFiles.length})
+                        </h4>
+                        {fileTypeModal.limitViolations && (
+                          <>
+                            {fileTypeModal.limitViolations.fileCountExceeded && (
+                              <p className="file-type-error">
+                                ❌ Error: {fileTypeModal.fileCount} files exceeds the maximum limit of {MAX_COMPATIBLE_FILES_HARD_LIMIT} files. Cannot proceed.
+                              </p>
+                            )}
+                            {fileTypeModal.limitViolations.fileCountWarning && !fileTypeModal.limitViolations.fileCountExceeded && (
+                              <p className="file-type-warning">
+                                ⚠️ Warning: {fileTypeModal.fileCount} files exceeds the recommended limit of {MAX_COMPATIBLE_FILES_WARNING} files. Performance may be affected.
+                              </p>
+                            )}
+                            {fileTypeModal.limitViolations.totalSizeExceeded && (
+                              <p className="file-type-error">
+                                ❌ Error: Total size of {(fileTypeModal.totalSize / 1024 / 1024).toFixed(1)}MB exceeds the maximum limit of {MAX_TOTAL_SIZE_HARD_LIMIT / 1024 / 1024}MB. Cannot proceed.
+                              </p>
+                            )}
+                            {fileTypeModal.limitViolations.totalSizeWarning && !fileTypeModal.limitViolations.totalSizeExceeded && (
+                              <p className="file-type-warning">
+                                ⚠️ Warning: Total size of {(fileTypeModal.totalSize / 1024 / 1024).toFixed(1)}MB exceeds the recommended limit of {MAX_TOTAL_SIZE_WARNING / 1024 / 1024}MB. Performance may be affected.
+                              </p>
+                            )}
+                            {!fileTypeModal.limitViolations.fileCountWarning && !fileTypeModal.limitViolations.totalSizeWarning && fileTypeModal.fileCount > 50 && (
+                              <p className="file-type-info">
+                                ℹ️ Total size: {(fileTypeModal.totalSize / 1024 / 1024).toFixed(1)}MB
+                              </p>
+                            )}
+                          </>
+                        )}
+                        <ul className="file-type-list compatible">
+                          {fileTypeModal.compatibleFiles.slice(0, 50).map((file, idx) => (
+                            <li key={idx}>
+                              <span className="file-name">{file.name}</span>
+                              <span className="file-type-badge">{file.type}</span>
+                              <span className="file-size">({(file.size / 1024).toFixed(1)} KB)</span>
+                            </li>
+                          ))}
+                          {fileTypeModal.compatibleFiles.length > 50 && (
+                            <li className="file-type-more">
+                              ... and {fileTypeModal.compatibleFiles.length - 50} more files
+                            </li>
+                          )}
+                        </ul>
+                      </div>
+                    )}
+                    
+                    {fileTypeModal.incompatibleFiles.length > 0 && (
+                      <div className="file-type-section">
+                        <h4 className="file-type-incompatible">
+                          ⚠️ Incompatible or Too Large ({fileTypeModal.incompatibleFiles.length})
+                        </h4>
+                        <ul className="file-type-list incompatible">
+                          {fileTypeModal.incompatibleFiles.slice(0, 20).map((file, idx) => (
+                            <li key={idx}>
+                              <span className="file-name">{file.name}</span>
+                              <span className="file-type-badge">{file.type}</span>
+                              <span className="file-size">({(file.size / 1024).toFixed(1)} KB)</span>
+                              {file.warning && <span className="file-warning-badge">{file.warning}</span>}
+                            </li>
+                          ))}
+                          {fileTypeModal.incompatibleFiles.length > 20 && (
+                            <li className="file-type-more">
+                              ... and {fileTypeModal.incompatibleFiles.length - 20} more files
+                            </li>
+                          )}
+                        </ul>
+                        <p className="file-type-warning">
+                          These files will be excluded if you choose to continue. Large files (&gt;5MB images, &gt;10MB others) are excluded for performance.
+                        </p>
+                      </div>
+                    )}
+                    
+                    {fileTypeModal.compatibleFiles.length === 0 && (
+                      <p className="file-type-error">
+                        ⚠️ No compatible files found. Supported file types: HTML, CSS, JS, and images (JPG, PNG, GIF, WebP, SVG). Files larger than 5MB (images) or 10MB (others) are excluded.
+                      </p>
+                    )}
+                    
+                    {fileTypeModal.compatibleFiles.length > 0 && (
+                      <div className="file-type-summary">
+                        <p><strong>Summary:</strong></p>
+                        <ul>
+                          <li>Compatible files: {fileTypeModal.fileCount}</li>
+                          <li>Total size: {(fileTypeModal.totalSize / 1024 / 1024).toFixed(1)}MB</li>
+                          <li>Supported file types: HTML, CSS, JavaScript (.html, .css, .js) and images (JPG, PNG, GIF, WEBP, SVG)</li>
+                          <li>Limits: Max {MAX_COMPATIBLE_FILES_HARD_LIMIT} files, Max {MAX_TOTAL_SIZE_HARD_LIMIT / 1024 / 1024}MB total</li>
+                        </ul>
+                      </div>
                     )}
                   </div>
+                  <div className="file-type-modal-actions">
+                    <button 
+                      className="file-type-cancel"
+                      onClick={() => fileTypeModal.onCancel?.()}
+                    >
+                      Cancel
+                    </button>
+                    {fileTypeModal.compatibleFiles.length > 0 && fileTypeModal.limitViolations?.canProceed !== false && (
+                      <button 
+                        className="file-type-continue"
+                        onClick={() => fileTypeModal.onContinue?.()}
+                      >
+                        Continue with Compatible Files
+                      </button>
+                    )}
+                    {fileTypeModal.compatibleFiles.length > 0 && fileTypeModal.limitViolations?.canProceed === false && (
+                      <button 
+                        className="file-type-continue"
+                        disabled
+                        title="Cannot proceed: Project exceeds hard limits"
+                      >
+                        Cannot Proceed (Exceeds Limits)
+                      </button>
+                    )}
                   </div>
                 </div>
+              </div>
             )}
 
             <div style={{ display: 'none' }}>

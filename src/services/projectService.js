@@ -163,7 +163,49 @@ export const saveProject = async (projectName, files, userId) => {
 }
 
 /**
- * Load a project from Supabase
+ * Load a project from Supabase by ID
+ */
+export const loadProjectById = async (projectId, userId) => {
+  try {
+    // Find project by ID and verify it belongs to the user
+    const { data: project, error: projectError } = await supabase
+      .from('projects')
+      .select('id, name, created_at, updated_at')
+      .eq('id', projectId)
+      .eq('user_id', userId)
+      .single()
+
+    if (projectError || !project) {
+      console.error('Project not found by ID:', projectId, 'Error:', projectError)
+      throw new Error('Project not found')
+    }
+
+    // Load all files for this project
+    const { data: files, error: filesError } = await supabase
+      .from('project_files')
+      .select('file_name, file_content, file_type')
+      .eq('project_id', project.id)
+      .order('file_name')
+
+    if (filesError) throw filesError
+
+    // Convert to the format expected by the app
+    const formattedFiles = files.map((file) => ({
+      name: file.file_name,
+      content: file.file_content,
+      type: file.file_type,
+      lastModified: Date.now(), // We don't store this, so use current time
+    }))
+
+    return { project, files: formattedFiles }
+  } catch (error) {
+    console.error('Error loading project by ID:', error)
+    throw error
+  }
+}
+
+/**
+ * Load a project from Supabase by name (for backwards compatibility)
  */
 export const loadProject = async (projectName, userId) => {
   try {
