@@ -5,7 +5,8 @@ import TabPanel from './components/TabPanel'
 import AuthModal from './components/AuthModal'
 import MenuBar from './components/MenuBar'
 import { useAuth } from './contexts/AuthContext'
-import { saveProject, saveTextChanges } from './services/projectService'
+// Projects saved to user account (Supabase) - "All Projects" is the source of truth
+import { saveProject, loadProject, saveProjectAsNew } from './services/projectService'
 import './App.css'
 
 function App() {
@@ -30,7 +31,13 @@ function App() {
   const [lastSaved, setLastSaved] = useState(null)
   const [showAuthModal, setShowAuthModal] = useState(false)
   const [currentProjectName, setCurrentProjectName] = useState(null)
-  const [currentProjectId, setCurrentProjectId] = useState(null)
+  const [hasBeenSavedToAllProjects, setHasBeenSavedToAllProjects] = useState(false)
+  const [isLoadedFromAllProjects, setIsLoadedFromAllProjects] = useState(false)
+  const [showSavePrompt, setShowSavePrompt] = useState(false)
+  const [pendingNavigation, setPendingNavigation] = useState(null) // 'welcome' | 'refresh' | null
+  const [duplicateNameModal, setDuplicateNameModal] = useState({ show: false, projectName: '', onRename: null, onCancel: null })
+  const isSavingRef = useRef(false) // Prevent duplicate saves
+  const lastSavedNameRef = useRef(null) // Track the last name we saved to prevent duplicate check
   
   const { user, loading: authLoading } = useAuth()
 
@@ -61,7 +68,221 @@ function App() {
   const previewPaneRef = useRef(null)
   const isInternalUpdateRef = useRef(false) // Track if update is from manual save to prevent reload loop
 
-  const handleProjectLoad = async (files) => {
+  // Helper function to find next available project name with (1), (2), etc.
+  const findNextAvailableProjectName = useCallback(async (baseName, userId) => {
+    const { listProjects } = await import('./services/projectService')
+    // Get fresh list of all projects from database
+    const allProjects = await listProjects(userId)
+    console.log('findNextAvailableProjectName: All projects from DB:', allProjects.map(p => ({ name: p.name, deletedAt: p.deletedAt })))
+    
+    // Only check active projects (not deleted ones)
+    // deletedAt will be null or undefined for active projects, or a timestamp string for deleted ones
+    const activeProjects = allProjects.filter(p => {
+      const isActive = !p.deletedAt || p.deletedAt === null || p.deletedAt === undefined
+      return isActive
+    })
+    console.log('findNextAvailableProjectName: Active projects:', activeProjects.map(p => p.name))
+    
+    const existingNames = new Set(activeProjects.map(p => p.name))
+    console.log('findNextAvailableProjectName: Existing names:', Array.from(existingNames))
+    
+    if (!existingNames.has(baseName)) {
+      console.log('findNextAvailableProjectName: Base name available:', baseName)
+      return baseName
+    }
+    
+    // Find the highest number already used
+    const baseNamePattern = new RegExp(`^${baseName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\((\\d+)\\)$`)
+    const usedNumbers = new Set()
+    
+    existingNames.forEach(name => {
+      if (name === baseName) {
+        usedNumbers.add(0) // Base name counts as 0
+      } else {
+        const match = name.match(baseNamePattern)
+        if (match) {
+          usedNumbers.add(parseInt(match[1], 10))
+        }
+      }
+    })
+    
+    // Find the next available number
+    let counter = 1
+    while (usedNumbers.has(counter)) {
+      counter++
+    }
+    
+    const newName = `${baseName} (${counter})`
+    console.log('findNextAvailableProjectName: Next available name:', newName)
+    return newName
+  }, [])
+
+  // Save project to "All Projects" (user account/Supabase) - this is the source of truth
+  const saveProjectToAllProjects = useCallback(async (files, projectName, allowDuplicates = false) => {
+    if (!files || files.length === 0 || !projectName) {
+      console.log('saveProjectToAllProjects: Skipping - missing files or projectName', { files: !!files, filesLength: files?.length, projectName })
+      return { success: false, projectId: null }
+    }
+    
+    if (!user) {
+      console.warn('Cannot save to All Projects - user not logged in')
+      return { success: false, projectId: null }
+    }
+    
+    // Prevent duplicate saves
+    if (isSavingRef.current) {
+      console.log('Save already in progress, skipping duplicate call')
+      return { success: false, projectId: null, error: 'Save already in progress' }
+    }
+    
+    isSavingRef.current = true
+    
+    try {
+      let finalProjectName = projectName
+      let wasRenamedInThisSave = false
+      
+      // Only check for duplicates if allowDuplicates is false
+      // Skip duplicate check if we're in the middle of saving (isSavingRef prevents this, but double-check)
+      if (!allowDuplicates) {
+        // Check if project name already exists in All Projects
+        // Get fresh list from database to ensure we have the latest projects
+        const { listProjects } = await import('./services/projectService')
+        const allProjects = await listProjects(user.id)
+        console.log('saveProjectToAllProjects: Checking for duplicate. All projects:', allProjects.map(p => ({ name: p.name, deletedAt: p.deletedAt })))
+        
+        // Only check active projects (not deleted ones)
+        // deletedAt will be null or undefined for active projects, or a timestamp string for deleted ones
+        const activeProjects = allProjects.filter(p => {
+          const isActive = !p.deletedAt || p.deletedAt === null || p.deletedAt === undefined
+          return isActive
+        })
+        console.log('saveProjectToAllProjects: Active projects:', activeProjects.map(p => p.name))
+        
+        const existingProject = activeProjects.find(p => p.name === projectName)
+        
+        // Skip duplicate check if we just saved this exact name (prevents modal from appearing twice)
+        if (lastSavedNameRef.current === projectName) {
+          console.log('Skipping duplicate check - this name was just saved:', projectName)
+          // Clear the ref so it doesn't skip on future saves
+          lastSavedNameRef.current = null
+        }
+        
+        if (existingProject && lastSavedNameRef.current !== projectName) {
+          // Project with same name exists - force user to rename
+          // Don't clear pendingNavigation - we need to preserve it for after the save
+          // Just hide the save prompt while showing duplicate name modal
+          setShowSavePrompt(false)
+          
+          const userChoice = await new Promise((resolve) => {
+            const handleRename = (newName) => {
+              const trimmedName = newName.trim()
+              if (!trimmedName || trimmedName === '' || trimmedName === projectName) {
+                // Invalid name - don't close modal, just return
+                return
+              }
+              // Check if the new name also exists
+              const newNameExists = activeProjects.find(p => p.name === trimmedName)
+              if (newNameExists) {
+                alert(`A project named "${trimmedName}" already exists. Please choose a different name.`)
+                return
+              }
+              setDuplicateNameModal({ show: false, projectName: '', onRename: null, onCancel: null })
+              resolve({ action: 'rename', name: trimmedName })
+            }
+            
+            const handleCancel = () => {
+              setDuplicateNameModal({ show: false, projectName: '', onRename: null, onCancel: null })
+              resolve({ action: 'cancel' })
+            }
+            
+            setDuplicateNameModal({
+              show: true,
+              projectName: projectName,
+              onRename: handleRename,
+              onCancel: handleCancel
+            })
+          })
+          
+          if (userChoice.action === 'cancel') {
+            // User cancelled - abort save
+            isSavingRef.current = false
+            return { success: false, projectId: null, error: 'Save cancelled by user' }
+          }
+          
+          if (userChoice.action === 'rename') {
+            finalProjectName = userChoice.name || projectName
+            wasRenamedInThisSave = finalProjectName !== projectName
+            // Re-check if the new name exists (in case it was added between the check and now)
+            const { listProjects: recheckListProjects } = await import('./services/projectService')
+            const recheckProjects = await recheckListProjects(user.id)
+            const recheckActiveProjects = recheckProjects.filter(p => {
+              const isActive = !p.deletedAt || p.deletedAt === null || p.deletedAt === undefined
+              return isActive
+            })
+            const recheckExists = recheckActiveProjects.find(p => p.name === finalProjectName)
+            if (recheckExists) {
+              // The new name also exists - show error and abort
+              alert(`A project named "${finalProjectName}" already exists. Please choose a different name.`)
+              isSavingRef.current = false
+              return { success: false, projectId: null, error: 'New name also exists' }
+            }
+            // Mark that we've already checked for duplicates with this name
+            // This prevents the duplicate check from running again after we save
+            lastSavedNameRef.current = finalProjectName
+            // Don't update currentProjectName here - let the caller update it after save completes
+            // This prevents triggering another save with the new name
+          } else {
+            // Should not happen, but fallback
+            isSavingRef.current = false
+            return { success: false, projectId: null, error: 'Invalid user choice' }
+          }
+        }
+      }
+      
+      // Save to Supabase (user's account)
+      // Include image dataUrls in content
+      const filesForCloud = files.map(file => ({
+        name: file.name,
+        content: file.isImage && file.dataUrl ? file.dataUrl : file.content,
+        type: file.type || file.name.split('.').pop(),
+      }))
+      
+      // Always create a new project (don't update existing)
+      const { saveProjectAsNew: saveAsNew } = await import('./services/projectService')
+      const result = await saveAsNew(finalProjectName, filesForCloud, user.id)
+      console.log('✅ Saved project to All Projects (user account):', finalProjectName, 'with', files.length, 'files', 'Project ID:', result.projectId)
+      setHasBeenSavedToAllProjects(true)
+      
+      // Track the name we just saved to prevent duplicate check on immediate re-save
+      lastSavedNameRef.current = finalProjectName
+      // Clear it after a short delay to allow normal duplicate checking on future saves
+      setTimeout(() => {
+        lastSavedNameRef.current = null
+      }, 1000)
+      
+      // Don't remove from recently deleted list - let user manually restore if they want
+      // Projects can exist in both All Projects and Recently Deleted simultaneously
+      // But when saved, deleted_at is cleared, so it will appear in All Projects
+      
+      // Return the final project name (which may have been renamed)
+      // Include wasRenamed flag so caller knows not to check for duplicates again
+      return { success: true, projectId: result.projectId, projectName: finalProjectName, wasRenamed: wasRenamedInThisSave }
+    } catch (error) {
+      console.error('❌ Error saving project to All Projects:', error)
+      console.error('Error details:', {
+        message: error.message,
+        code: error.code,
+        details: error.details,
+        hint: error.hint
+      })
+      alert(`Failed to save project: ${error.message || 'Unknown error'}`)
+      return { success: false, projectId: null, error }
+    } finally {
+      isSavingRef.current = false
+    }
+  }, [user])
+
+  const handleProjectLoad = async (files, fromAllProjects = false, defaultProjectName = null) => {
     setProjectFiles(files)
     // Auto-select index.html if available
     const indexHtml = files.find(f => f.name === 'index.html')
@@ -70,29 +291,24 @@ function App() {
     }
     
     // Set default project name if not set
-    if (!currentProjectName) {
-      // Extract project name from first HTML file or use default
-      const firstHtml = files.find(f => f.name.endsWith('.html'))
-      const projectName = firstHtml ? firstHtml.name.replace('.html', '') : 'Untitled Project'
+    let projectName = currentProjectName
+    if (!projectName) {
+      // Use provided default name (folder name), or extract from first HTML file, or use default
+      if (defaultProjectName) {
+        projectName = defaultProjectName
+      } else {
+        const firstHtml = files.find(f => f.name.endsWith('.html'))
+        projectName = firstHtml ? firstHtml.name.replace('.html', '') : 'Untitled Project'
+      }
       setCurrentProjectName(projectName)
     }
     
-    // If user is logged in, save project to cloud
-    if (user) {
-      try {
-        const filesForCloud = files.map(file => ({
-          name: file.name,
-          content: file.content,
-          type: file.type || file.name.split('.').pop(),
-        }))
-        const result = await saveProject(currentProjectName || 'Untitled Project', filesForCloud, user.id)
-        if (result && result.projectId) {
-          setCurrentProjectId(result.projectId)
-        }
-      } catch (error) {
-        console.error('Error saving project on load:', error)
-      }
-    }
+    // Track if project was loaded from All Projects (already saved)
+    setIsLoadedFromAllProjects(fromAllProjects)
+    // If loaded from All Projects, it's already saved; otherwise, mark as unsaved
+    setHasBeenSavedToAllProjects(fromAllProjects)
+    
+    // Don't save on load - only save when user manually presses "Save"
   }
 
   const handleFileUpdate = (fileName, newContent) => {
@@ -478,83 +694,36 @@ function App() {
     console.log('=== UPDATE HTML FILE DEBUG END (FAILED) ===');
   }
 
-  // Manual save function that persists changes to cloud and files
+  // Manual save function that persists changes and saves to All Projects
   const handleManualSave = useCallback(async () => {
-    if (pendingTextChanges.size === 0) {
-      console.log('No pending changes to save');
+    if (!projectFiles) {
+      console.warn('Cannot save - no project files');
       return;
     }
     
-    if (!user || !projectFiles) {
-      // If user is not logged in, just update local files
-      if (pendingTextChanges.size > 0 && projectFiles) {
-        console.log('User not logged in - saving to local files only');
-        pendingTextChanges.forEach((change) => {
-          updateHTMLFile(change.newText, change.element, change.fileName);
-        });
-        setPendingTextChanges(new Map());
-        setSaveStatus('saved');
-        setLastSaved(new Date());
-        setIsTextEditing(false);
-      }
+    if (!user) {
+      console.warn('Cannot save - user not logged in');
+      setShowAuthModal(true);
       return;
     }
     
     console.log('=== MANUAL SAVE TRIGGERED ===');
     console.log('Pending changes count:', pendingTextChanges.size);
+    // Clear any pending navigation and save prompt when saving manually
+    setPendingNavigation(null)
+    setShowSavePrompt(false)
     setSaveStatus('saving');
     
     try {
-      let projectId = currentProjectId;
-      
-      // If project doesn't exist in cloud, create it
-      if (!projectId) {
-        const filesForCloud = projectFiles.map(file => ({
-          name: file.name,
-          content: file.content,
-          type: file.type || file.name.split('.').pop(),
-        }));
-        
-        const result = await saveProject(currentProjectName || 'Untitled Project', filesForCloud, user.id);
-        if (result && result.projectId) {
-          projectId = result.projectId;
-          setCurrentProjectId(projectId);
-        }
-      }
-      
-      // Save text changes to cloud if project exists
-      if (projectId) {
-        for (const [elementKey, change] of pendingTextChanges.entries()) {
-          const elementSelector = `${change.element.tagName}${change.element.id ? '#' + change.element.id : ''}${change.element.className ? '.' + change.element.className.split(' ')[0] : ''}`;
-          
-          // Save to Supabase text_changes table
-          await saveTextChanges(
-            projectId,
-            change.fileName,
-            elementSelector,
-            change.originalText || '',
-            change.newText,
-            user.id
-          );
-        }
-        
-        // Save all files to cloud project
-        const filesForCloud = projectFiles.map(file => ({
-          name: file.name,
-          content: file.content,
-          type: file.type || file.name.split('.').pop(),
-        }));
-        
-        await saveProject(currentProjectName || 'Untitled Project', filesForCloud, user.id);
-      }
-      
       // Mark as internal update to prevent reload loop
       isInternalUpdateRef.current = true;
       
-      // Update local file content
-      pendingTextChanges.forEach((change) => {
-        updateHTMLFile(change.newText, change.element, change.fileName);
-      });
+      // Update local file content if there are pending changes
+      if (pendingTextChanges.size > 0) {
+        pendingTextChanges.forEach((change) => {
+          updateHTMLFile(change.newText, change.element, change.fileName);
+        });
+      }
       
       // Clear internal update flag after a short delay
       setTimeout(() => {
@@ -567,16 +736,65 @@ function App() {
       // Clear text editing state after save
       setIsTextEditing(false);
       
+      // Save to All Projects (Supabase) - always save, even if no pending changes
+      if (currentProjectName && projectFiles) {
+        console.log('=== SAVING TO ALL PROJECTS ===')
+        console.log('Project name:', currentProjectName)
+        console.log('Files count:', projectFiles.length)
+        const result = await saveProjectToAllProjects(projectFiles, currentProjectName, false)
+        if (result.success) {
+          setHasBeenSavedToAllProjects(true)
+          // Update project name if it was changed (renamed)
+          // Only update if it was actually renamed to prevent triggering another save
+          if (result.wasRenamed && result.projectName && result.projectName !== currentProjectName) {
+            // Update immediately since we know it was renamed and saved successfully
+            // The wasRenamed flag ensures we won't check for duplicates again
+            setCurrentProjectName(result.projectName)
+          } else if (result.projectName && result.projectName !== currentProjectName) {
+            // If not explicitly renamed but name changed, use setTimeout to be safe
+            setTimeout(() => {
+              setCurrentProjectName(result.projectName)
+            }, 100)
+          }
+          // Clear any pending navigation since we just saved manually
+          setPendingNavigation(null)
+          setShowSavePrompt(false)
+          console.log('✅ Project saved to All Projects successfully')
+        } else {
+          // Check if save was cancelled by user
+          if (result.error === 'Save cancelled by user') {
+            console.log('Save was cancelled by user')
+            setSaveStatus('unsaved')
+            isInternalUpdateRef.current = false
+            return
+          }
+          console.error('❌ Failed to save project to All Projects')
+          setSaveStatus('unsaved');
+          isInternalUpdateRef.current = false;
+          return;
+        }
+        console.log('=== ALL PROJECTS SAVE COMPLETED ===')
+      } else {
+        console.warn('Cannot save - missing projectName or projectFiles', { 
+          hasProjectName: !!currentProjectName, 
+          hasProjectFiles: !!projectFiles 
+        })
+        setSaveStatus('unsaved');
+        isInternalUpdateRef.current = false;
+        return;
+      }
+      
       // Update save status
       setSaveStatus('saved');
       setLastSaved(new Date());
+      
       console.log('=== MANUAL SAVE COMPLETED ===');
     } catch (error) {
       console.error('Manual save error:', error);
       setSaveStatus('unsaved'); // Keep as unsaved on error
       isInternalUpdateRef.current = false; // Reset flag on error
     }
-  }, [pendingTextChanges, user, currentProjectId, currentProjectName, projectFiles]);
+  }, [pendingTextChanges, currentProjectName, projectFiles, saveProjectToAllProjects, user]);
 
   const applyPendingTextChanges = async (persistToFile = false) => {
     console.log('=== APPLYING PENDING TEXT CHANGES ===');
@@ -665,26 +883,337 @@ function App() {
     console.log('=== END FILE SELECT DEBUG ===');
   }
 
-  const handleReturnToWelcome = () => {
+  // Helper function to check for duplicate name and handle rename if needed
+  const checkAndRenameIfDuplicate = useCallback(async (projectName) => {
+    if (!user || !projectName) {
+      return { success: true, finalName: projectName }
+    }
+
+    // Check if project name already exists in All Projects
+    const { listProjects } = await import('./services/projectService')
+    const allProjects = await listProjects(user.id)
+    
+    // Only check active projects (not deleted ones)
+    const activeProjects = allProjects.filter(p => {
+      const isActive = !p.deletedAt || p.deletedAt === null || p.deletedAt === undefined
+      return isActive
+    })
+    
+    const existingProject = activeProjects.find(p => p.name === projectName)
+    
+    // If no duplicate, return original name
+    if (!existingProject || lastSavedNameRef.current === projectName) {
+      return { success: true, finalName: projectName }
+    }
+    
+    // Duplicate exists - show rename modal
+    const userChoice = await new Promise((resolve) => {
+      const handleRename = (newName) => {
+        const trimmedName = newName.trim()
+        if (!trimmedName || trimmedName === '' || trimmedName === projectName) {
+          // Invalid name - don't close modal, just return
+          return
+        }
+        // Check if the new name also exists
+        const newNameExists = activeProjects.find(p => p.name === trimmedName)
+        if (newNameExists) {
+          alert(`A project named "${trimmedName}" already exists. Please choose a different name.`)
+          return
+        }
+        setDuplicateNameModal({ show: false, projectName: '', onRename: null, onCancel: null })
+        resolve({ action: 'rename', name: trimmedName })
+      }
+      
+      const handleCancel = () => {
+        setDuplicateNameModal({ show: false, projectName: '', onRename: null, onCancel: null })
+        resolve({ action: 'cancel' })
+      }
+      
+      setDuplicateNameModal({
+        show: true,
+        projectName: projectName,
+        onRename: handleRename,
+        onCancel: handleCancel
+      })
+    })
+    
+    if (userChoice.action === 'cancel') {
+      return { success: false, finalName: null, error: 'Rename cancelled by user' }
+    }
+    
+    if (userChoice.action === 'rename') {
+      // Re-check if the new name exists (in case it was added between the check and now)
+      const { listProjects: recheckListProjects } = await import('./services/projectService')
+      const recheckProjects = await recheckListProjects(user.id)
+      const recheckActiveProjects = recheckProjects.filter(p => {
+        const isActive = !p.deletedAt || p.deletedAt === null || p.deletedAt === undefined
+        return isActive
+      })
+      const recheckExists = recheckActiveProjects.find(p => p.name === userChoice.name)
+      if (recheckExists) {
+        alert(`A project named "${userChoice.name}" already exists. Please choose a different name.`)
+        return { success: false, finalName: null, error: 'New name also exists' }
+      }
+      return { success: true, finalName: userChoice.name }
+    }
+    
+    return { success: false, finalName: null, error: 'Invalid user choice' }
+  }, [user])
+
+  const handleReturnToWelcome = async () => {
+    // Check if project needs to be saved (even if user is not logged in)
+    if (projectFiles && currentProjectName && !hasBeenSavedToAllProjects) {
+      // If user is logged in, check for duplicate name first and rename if needed
+      if (user) {
+        const renameResult = await checkAndRenameIfDuplicate(currentProjectName)
+        if (!renameResult.success) {
+          // User cancelled rename or error occurred - abort navigation
+          return
+        }
+        
+        // Apply any pending text changes first
+        if (pendingTextChanges.size > 0) {
+          await applyPendingTextChanges(true)
+        }
+        
+        // Update project name if it was renamed (after applying text changes)
+        if (renameResult.finalName !== currentProjectName) {
+          setCurrentProjectName(renameResult.finalName)
+        }
+        
+        // Mark that we've already checked for duplicates with this name
+        // This prevents the duplicate check from running again in saveProjectToAllProjects
+        lastSavedNameRef.current = renameResult.finalName
+        
+        // Save with the (possibly renamed) name
+        // We use allowDuplicates=false to go through normal flow, but lastSavedNameRef prevents duplicate check
+        const result = await saveProjectToAllProjects(projectFiles, renameResult.finalName, false)
+        if (result.success) {
+          setHasBeenSavedToAllProjects(true)
+          // Navigate to welcome screen
+          await performReturnToWelcome(true)
+        } else {
+          alert('Failed to save project. Please try again.')
+        }
+        return
+      } else {
+        // User not logged in - show save prompt (they need to log in first)
+        setPendingNavigation('welcome')
+        setShowSavePrompt(true)
+        return
+      }
+    }
+    
+    // If no save needed, proceed with navigation
+    await performReturnToWelcome()
+  }
+
+  const performReturnToWelcome = async (skipSave = false) => {
+    // Save current project state before navigating away
+    if (projectFiles && currentProjectName && !skipSave) {
+      // Apply any pending text changes first
+      if (pendingTextChanges.size > 0) {
+        applyPendingTextChanges(true)
+      }
+      
+      // Save to All Projects before navigating away (if not already saved)
+      if (!hasBeenSavedToAllProjects && user) {
+        const result = await saveProjectToAllProjects(projectFiles, currentProjectName)
+        if (result.success) {
+          console.log('Saved project to All Projects before navigating to welcome screen')
+        }
+      }
+    }
+    
     // Reset all project state to return to welcome screen (but keep user logged in)
     setProjectFiles(null)
     setSelectedFile(null)
     setSelectedElement(null)
     setCurrentProjectName(null)
-    setCurrentProjectId(null)
     setPendingTextChanges(new Map())
     setSaveStatus('saved')
     setLastSaved(null)
     setIsTextEditing(false)
     setIsSettingsOpen(false)
+    setHasBeenSavedToAllProjects(false)
+    setIsLoadedFromAllProjects(false)
+    setShowSavePrompt(false)
+    setPendingNavigation(null)
   }
+
+  // Handle page refresh/close
+  useEffect(() => {
+    const handleBeforeUnload = (e) => {
+      // Prompt if project is loaded and not saved (even if user is not logged in)
+      if (projectFiles && currentProjectName && !hasBeenSavedToAllProjects) {
+        e.preventDefault()
+        e.returnValue = 'You have an unsaved project. Do you want to save it before leaving?'
+        return e.returnValue
+      }
+    }
+
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload)
+    }
+  }, [projectFiles, currentProjectName, hasBeenSavedToAllProjects])
 
   return (
     <div className={`app font-size-${fontSize}`}>
       {showAuthModal && <AuthModal onClose={() => setShowAuthModal(false)} />}
       
+      {/* Save Prompt Modal */}
+      {showSavePrompt && (
+        <div className="save-prompt-overlay" onClick={() => setShowSavePrompt(false)}>
+          <div className="save-prompt-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="save-prompt-header">
+              <h3>Save Project</h3>
+            </div>
+            <div className="save-prompt-body">
+              <p>Do you want to save <strong>"{currentProjectName}"</strong> to All Projects before leaving?</p>
+              <p className="save-prompt-info">This will save your project to your account so you can access it later.</p>
+            </div>
+            <div className="save-prompt-actions">
+              <button 
+                className="save-prompt-cancel"
+                onClick={async () => {
+                  setShowSavePrompt(false)
+                  if (pendingNavigation === 'welcome') {
+                    await performReturnToWelcome()
+                  }
+                }}
+              >
+                Don't Save
+              </button>
+              <button 
+                className="save-prompt-confirm"
+                onClick={async () => {
+                  if (!user) {
+                    // User needs to log in first
+                    setShowSavePrompt(false)
+                    setShowAuthModal(true)
+                    // After they log in, they can save manually
+                    return
+                  }
+                  
+                  if (projectFiles && currentProjectName) {
+                    // Apply any pending text changes first
+                    if (pendingTextChanges.size > 0) {
+                      applyPendingTextChanges(true)
+                    }
+                    
+                    // Store the navigation target before saving (in case it gets cleared during duplicate check)
+                    const navTarget = pendingNavigation
+                    
+                    const result = await saveProjectToAllProjects(projectFiles, currentProjectName, false)
+                    if (result.success) {
+                      // Update project name if it was changed (auto-incremented or renamed)
+                      if (result.projectName && result.projectName !== currentProjectName) {
+                        setCurrentProjectName(result.projectName)
+                      }
+                      // Ensure hasBeenSavedToAllProjects is set before navigation
+                      setHasBeenSavedToAllProjects(true)
+                      setShowSavePrompt(false)
+                      setPendingNavigation(null)
+                      // Navigate if we were trying to navigate before
+                      // Pass skipSave=true since we just saved
+                      if (navTarget === 'welcome') {
+                        await performReturnToWelcome(true)
+                      }
+                    } else {
+                      // If save was cancelled (e.g., user cancelled duplicate name modal), don't show error
+                      if (result.error !== 'Save cancelled by user') {
+                        alert('Failed to save project. Please try again.')
+                      }
+                    }
+                  }
+                }}
+              >
+                Save Project
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      
+      {/* Duplicate Name Modal */}
+      {duplicateNameModal.show && (
+        <div className="save-prompt-overlay" style={{ zIndex: 10001 }}>
+          <div className="save-prompt-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="save-prompt-header">
+              <h3>Project Name Already Exists</h3>
+            </div>
+            <div className="save-prompt-body">
+              <p>A project named <strong>"{duplicateNameModal.projectName}"</strong> already exists in All Projects.</p>
+              <p>Please enter a different project name to continue.</p>
+              <div style={{ marginTop: '1rem' }}>
+                <input
+                  type="text"
+                  id="duplicate-name-input"
+                  placeholder="Enter new project name"
+                  defaultValue=""
+                  style={{
+                    width: '100%',
+                    padding: '0.75rem',
+                    marginBottom: '0.5rem',
+                    background: '#1a1a1a',
+                    border: '1px solid #262626',
+                    borderRadius: '6px',
+                    color: '#e5e5e5',
+                    fontSize: '0.875rem',
+                    outline: 'none'
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      const input = e.target
+                      const newName = input.value.trim()
+                      if (newName && newName !== duplicateNameModal.projectName && duplicateNameModal.onRename) {
+                        duplicateNameModal.onRename(newName)
+                      }
+                    }
+                  }}
+                  autoFocus
+                />
+              </div>
+            </div>
+            <div className="save-prompt-actions">
+              <button 
+                className="save-prompt-cancel"
+                onClick={() => {
+                  if (duplicateNameModal.onCancel) {
+                    duplicateNameModal.onCancel()
+                  }
+                }}
+              >
+                Cancel
+              </button>
+              <button 
+                className="save-prompt-confirm"
+                onClick={() => {
+                  const input = document.getElementById('duplicate-name-input')
+                  const newName = input?.value?.trim()
+                  if (!newName || newName === duplicateNameModal.projectName) {
+                    // Invalid name - show error or prevent action
+                    alert('Please enter a different project name.')
+                    return
+                  }
+                  if (duplicateNameModal.onRename) {
+                    duplicateNameModal.onRename(newName)
+                  }
+                }}
+              >
+                Rename & Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {!projectFiles ? (
-        <FileUploader onProjectLoad={handleProjectLoad} />
+        <FileUploader 
+          onProjectLoad={handleProjectLoad}
+          key={Date.now()} // Force remount when returning to welcome screen to refresh projects
+        />
       ) : (
         <>
           <MenuBar 
@@ -697,6 +1226,16 @@ function App() {
             onInspectorToggle={handleInspectorToggle}
             onSettingsToggle={handleSettingsToggle}
             onReturnToWelcome={handleReturnToWelcome}
+            gridOverlay={gridOverlay}
+            onGridOverlayChange={handleGridOverlayChange}
+            projectName={currentProjectName}
+            onProjectNameChange={(newName) => {
+              setCurrentProjectName(newName)
+              // If project was already saved, mark as unsaved since name changed
+              if (hasBeenSavedToAllProjects) {
+                setHasBeenSavedToAllProjects(false)
+              }
+            }}
           />
         <div className="app-layout">
           <div className="preview-section">
