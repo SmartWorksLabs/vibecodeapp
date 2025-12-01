@@ -33,10 +33,29 @@ function FileUploader({ onProjectLoad }) {
             // Ignore errors reading deleted projects
           }
           
+          // Get list of permanently deleted project IDs from localStorage
+          let permanentlyDeletedIds = new Set()
+          try {
+            const permanentlyDeletedStored = localStorage.getItem('vibecanvas_permanently_deleted_ids')
+            if (permanentlyDeletedStored) {
+              const permanentlyDeletedData = JSON.parse(permanentlyDeletedStored)
+              if (Array.isArray(permanentlyDeletedData)) {
+                permanentlyDeletedData.forEach(id => {
+                  if (id) {
+                    permanentlyDeletedIds.add(id)
+                  }
+                })
+              }
+            }
+          } catch (e) {
+            // Ignore errors reading permanently deleted projects
+          }
+          
           // Filter out deleted projects from cache
           // A project is deleted if:
           // 1. It has a deletedAt timestamp (valid ISO date string)
           // 2. Its projectId is in the recently deleted list
+          // 3. Its projectId is in the permanently deleted list (CRITICAL - these should NEVER appear)
           const activeProjects = cachedData.projects.filter(project => {
             // Check if project has deletedAt timestamp
             const deletedAt = project.deletedAt || project.deleted_at
@@ -50,8 +69,11 @@ function FileUploader({ onProjectLoad }) {
             // Check if project ID is in deleted list
             const isInDeletedList = project.projectId && deletedProjectIds.has(project.projectId)
             
-            // Project is active if it doesn't have a deleted timestamp AND is not in deleted list
-            return !hasDeletedTimestamp && !isInDeletedList
+            // Check if project ID is permanently deleted (CRITICAL - these should NEVER appear)
+            const isPermanentlyDeleted = project.projectId && permanentlyDeletedIds.has(project.projectId)
+            
+            // Project is active if it doesn't have a deleted timestamp AND is not in deleted list AND is not permanently deleted
+            return !hasDeletedTimestamp && !isInDeletedList && !isPermanentlyDeleted
           })
           
           console.log('📦 Loaded cache during init:', activeProjects.length, 'active (filtered from', cachedData.projects.length, 'total)')
@@ -117,6 +139,7 @@ function FileUploader({ onProjectLoad }) {
   // Delete confirmation modal state
   const [deleteModal, setDeleteModal] = useState({ show: false, project: null, isPermanent: false })
   const recentlyDeletedIdsRef = useRef(new Set())
+  const permanentlyDeletedIdsRef = useRef(new Set())
   const pauseRefreshRef = useRef(false)
   const hasLoadedFromCacheRef = useRef(false) // Track if we've loaded from cache
   const isInitialLoadRef = useRef(true) // Track if this is the initial load
@@ -324,12 +347,21 @@ function FileUploader({ onProjectLoad }) {
         }
       })
       
+      // CRITICAL: Filter out permanently deleted projects - they should NEVER appear again
+      // Even if they still exist in Supabase due to replication delay, we know they were deleted
+      permanentlyDeletedIdsRef.current.forEach(permanentlyDeletedId => {
+        deletedIds.add(permanentlyDeletedId)
+      })
+      
       const activeProjects = allFormatted.filter(project => !deletedIds.has(project.projectId))
       
       // Update recently deleted projects with current data from Supabase
       // Only show projects in Recently Deleted if they still exist in Supabase AND are still deleted
       // Important: Filter out projects that have been restored (deleted_at is null in database)
-      const deletedProjectsWithData = currentDeletedProjects.map(deleted => {
+      // CRITICAL: Also filter out permanently deleted projects - they should NEVER appear in Recently Deleted
+      const deletedProjectsWithData = currentDeletedProjects
+        .filter(deleted => !permanentlyDeletedIdsRef.current.has(deleted.projectId)) // Remove permanently deleted
+        .map(deleted => {
         const currentProject = allFormatted.find(p => p.projectId === deleted.projectId)
         if (currentProject) {
           // Check if project has been restored (deleted_at is null in database)
@@ -516,15 +548,86 @@ function FileUploader({ onProjectLoad }) {
   
   // Permanently delete a project
   const handlePermanentDelete = async (projectId) => {
+    if (!user) {
+      alert('Please sign in to permanently delete projects')
+      return
+    }
+    
     try {
+      // Permanently delete from Supabase (removes from all tables)
       await deleteProject(projectId, user.id)
-      setRecentlyDeletedProjects(prev => prev.filter(p => p.projectId !== projectId))
+      console.log('✅ Project permanently deleted from Supabase:', projectId)
+      
+      // Remove from recently deleted state
+      setRecentlyDeletedProjects(prev => {
+        const updated = prev.filter(p => p.projectId !== projectId)
+        // Update localStorage
+        if (updated.length > 0) {
+          localStorage.setItem('vibecanvas_recently_deleted_projects', JSON.stringify(updated))
+        } else {
+          localStorage.removeItem('vibecanvas_recently_deleted_projects')
+        }
+        return updated
+      })
+      
+      // Remove from recentlyDeletedIdsRef
+      recentlyDeletedIdsRef.current.delete(projectId)
+      
+      // Add to permanently deleted ref - this project should NEVER appear again
+      permanentlyDeletedIdsRef.current.add(projectId)
+      
+      // Save permanently deleted IDs to localStorage so they persist across refreshes
+      try {
+        const stored = localStorage.getItem('vibecanvas_permanently_deleted_ids')
+        const deletedIds = stored ? JSON.parse(stored) : []
+        if (!deletedIds.includes(projectId)) {
+          deletedIds.push(projectId)
+          localStorage.setItem('vibecanvas_permanently_deleted_ids', JSON.stringify(deletedIds))
+        }
+      } catch (e) {
+        console.warn('Error saving permanently deleted IDs:', e)
+      }
+      
+      // Remove from all projects cache if it exists there
+      try {
+        const cacheData = localStorage.getItem('vibecanvas_all_projects_cache')
+        if (cacheData) {
+          const parsed = JSON.parse(cacheData)
+          if (parsed && parsed.projects) {
+            const updatedProjects = parsed.projects.filter(p => p.projectId !== projectId)
+            if (updatedProjects.length > 0) {
+              localStorage.setItem('vibecanvas_all_projects_cache', JSON.stringify({
+                ...parsed,
+                projects: updatedProjects
+              }))
+            } else {
+              localStorage.removeItem('vibecanvas_all_projects_cache')
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('Error updating all projects cache:', e)
+      }
+      
+      // Update displayProjectsRef
+      if (displayProjectsRef.current) {
+        displayProjectsRef.current = displayProjectsRef.current.filter(p => p.projectId !== projectId)
+      }
+      
+      // Remove from allProjects state if present
+      setAllProjects(prev => prev.filter(p => p.projectId !== projectId))
+      
+      // Clear selection
       setSelectedProjects(prev => {
         const newSet = new Set(prev)
         newSet.delete(projectId)
         return newSet
       })
-      console.log('✅ Project permanently deleted')
+      
+      // Reload projects from Supabase to ensure fresh data
+      await loadAllProjects()
+      
+      console.log('✅ Project permanently deleted and all caches cleared:', projectId)
     } catch (error) {
       console.error('❌ Error permanently deleting project:', error)
       alert(`Failed to permanently delete project: ${error.message || 'Unknown error'}`)
@@ -533,12 +636,89 @@ function FileUploader({ onProjectLoad }) {
   
   // Permanently delete multiple projects
   const handlePermanentDeleteSelected = async () => {
+    if (!user) {
+      alert('Please sign in to permanently delete projects')
+      return
+    }
+    
     const selectedArray = Array.from(selectedProjects)
+    if (selectedArray.length === 0) {
+      return
+    }
+    
     try {
+      // Permanently delete all selected projects from Supabase
       await Promise.all(selectedArray.map(id => deleteProject(id, user.id)))
-      setRecentlyDeletedProjects(prev => prev.filter(p => !selectedProjects.has(p.projectId)))
+      console.log('✅ Projects permanently deleted from Supabase:', selectedArray.length)
+      
+      // Remove from recently deleted state
+      setRecentlyDeletedProjects(prev => {
+        const updated = prev.filter(p => !selectedProjects.has(p.projectId))
+        // Update localStorage
+        if (updated.length > 0) {
+          localStorage.setItem('vibecanvas_recently_deleted_projects', JSON.stringify(updated))
+        } else {
+          localStorage.removeItem('vibecanvas_recently_deleted_projects')
+        }
+        return updated
+      })
+      
+      // Remove from recentlyDeletedIdsRef
+      selectedArray.forEach(id => recentlyDeletedIdsRef.current.delete(id))
+      
+      // Add to permanently deleted ref - these projects should NEVER appear again
+      selectedArray.forEach(id => permanentlyDeletedIdsRef.current.add(id))
+      
+      // Save permanently deleted IDs to localStorage so they persist across refreshes
+      try {
+        const stored = localStorage.getItem('vibecanvas_permanently_deleted_ids')
+        const deletedIds = stored ? JSON.parse(stored) : []
+        selectedArray.forEach(id => {
+          if (!deletedIds.includes(id)) {
+            deletedIds.push(id)
+          }
+        })
+        localStorage.setItem('vibecanvas_permanently_deleted_ids', JSON.stringify(deletedIds))
+      } catch (e) {
+        console.warn('Error saving permanently deleted IDs:', e)
+      }
+      
+      // Remove from all projects cache
+      try {
+        const cacheData = localStorage.getItem('vibecanvas_all_projects_cache')
+        if (cacheData) {
+          const parsed = JSON.parse(cacheData)
+          if (parsed && parsed.projects) {
+            const updatedProjects = parsed.projects.filter(p => !selectedProjects.has(p.projectId))
+            if (updatedProjects.length > 0) {
+              localStorage.setItem('vibecanvas_all_projects_cache', JSON.stringify({
+                ...parsed,
+                projects: updatedProjects
+              }))
+            } else {
+              localStorage.removeItem('vibecanvas_all_projects_cache')
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('Error updating all projects cache:', e)
+      }
+      
+      // Update displayProjectsRef
+      if (displayProjectsRef.current) {
+        displayProjectsRef.current = displayProjectsRef.current.filter(p => !selectedProjects.has(p.projectId))
+      }
+      
+      // Remove from allProjects state
+      setAllProjects(prev => prev.filter(p => !selectedProjects.has(p.projectId)))
+      
+      // Clear all selections
       setSelectedProjects(new Set())
-      console.log('✅ Permanently deleted', selectedArray.length, 'project(s)')
+      
+      // Reload projects from Supabase to ensure fresh data
+      await loadAllProjects()
+      
+      console.log('✅ Permanently deleted', selectedArray.length, 'project(s) and all caches cleared')
     } catch (error) {
       console.error('❌ Error permanently deleting projects:', error)
       alert(`Failed to permanently delete projects: ${error.message || 'Unknown error'}`)
@@ -1534,7 +1714,7 @@ function FileUploader({ onProjectLoad }) {
                     {fileTypeModal.excludedFiles.length > 0 && (
                       <div className="file-type-section">
                         <h4 className="file-type-excluded">
-                          🚫 Excluded ({fileTypeModal.excludedFiles.length})
+                          Excluded ({fileTypeModal.excludedFiles.length})
                         </h4>
                         <p className="file-type-info">
                           Files from node_modules, .git, dist, build, and other excluded directories are automatically excluded.
@@ -1560,33 +1740,33 @@ function FileUploader({ onProjectLoad }) {
                     {fileTypeModal.compatibleFiles.length > 0 && (
                       <div className="file-type-section">
                         <h4 className="file-type-compatible">
-                          ✅ Compatible Files ({fileTypeModal.compatibleFiles.length})
+                          Compatible Files ({fileTypeModal.compatibleFiles.length})
                         </h4>
                         {fileTypeModal.limitViolations && (
                           <>
                             {fileTypeModal.limitViolations.fileCountExceeded && (
                               <p className="file-type-error">
-                                ❌ Error: {fileTypeModal.fileCount} files exceeds the maximum limit of {MAX_COMPATIBLE_FILES_HARD_LIMIT} files. Cannot proceed.
+                                Error: {fileTypeModal.fileCount} files exceeds the maximum limit of {MAX_COMPATIBLE_FILES_HARD_LIMIT} files. Cannot proceed.
                               </p>
                             )}
                             {fileTypeModal.limitViolations.fileCountWarning && !fileTypeModal.limitViolations.fileCountExceeded && (
                               <p className="file-type-warning">
-                                ⚠️ Warning: {fileTypeModal.fileCount} files exceeds the recommended limit of {MAX_COMPATIBLE_FILES_WARNING} files. Performance may be affected.
+                                Warning: {fileTypeModal.fileCount} files exceeds the recommended limit of {MAX_COMPATIBLE_FILES_WARNING} files. Performance may be affected.
                               </p>
                             )}
                             {fileTypeModal.limitViolations.totalSizeExceeded && (
                               <p className="file-type-error">
-                                ❌ Error: Total size of {(fileTypeModal.totalSize / 1024 / 1024).toFixed(1)}MB exceeds the maximum limit of {MAX_TOTAL_SIZE_HARD_LIMIT / 1024 / 1024}MB. Cannot proceed.
+                                Error: Total size of {(fileTypeModal.totalSize / 1024 / 1024).toFixed(1)}MB exceeds the maximum limit of {MAX_TOTAL_SIZE_HARD_LIMIT / 1024 / 1024}MB. Cannot proceed.
                               </p>
                             )}
                             {fileTypeModal.limitViolations.totalSizeWarning && !fileTypeModal.limitViolations.totalSizeExceeded && (
                               <p className="file-type-warning">
-                                ⚠️ Warning: Total size of {(fileTypeModal.totalSize / 1024 / 1024).toFixed(1)}MB exceeds the recommended limit of {MAX_TOTAL_SIZE_WARNING / 1024 / 1024}MB. Performance may be affected.
+                                Warning: Total size of {(fileTypeModal.totalSize / 1024 / 1024).toFixed(1)}MB exceeds the recommended limit of {MAX_TOTAL_SIZE_WARNING / 1024 / 1024}MB. Performance may be affected.
                               </p>
                             )}
                             {!fileTypeModal.limitViolations.fileCountWarning && !fileTypeModal.limitViolations.totalSizeWarning && fileTypeModal.fileCount > 50 && (
                               <p className="file-type-info">
-                                ℹ️ Total size: {(fileTypeModal.totalSize / 1024 / 1024).toFixed(1)}MB
+                                Total size: {(fileTypeModal.totalSize / 1024 / 1024).toFixed(1)}MB
                               </p>
                             )}
                           </>
@@ -1611,7 +1791,7 @@ function FileUploader({ onProjectLoad }) {
                     {fileTypeModal.incompatibleFiles.length > 0 && (
                       <div className="file-type-section">
                         <h4 className="file-type-incompatible">
-                          ⚠️ Incompatible or Too Large ({fileTypeModal.incompatibleFiles.length})
+                          Incompatible or Too Large ({fileTypeModal.incompatibleFiles.length})
                         </h4>
                         <ul className="file-type-list incompatible">
                           {fileTypeModal.incompatibleFiles.slice(0, 20).map((file, idx) => (
@@ -1636,7 +1816,7 @@ function FileUploader({ onProjectLoad }) {
                     
                     {fileTypeModal.compatibleFiles.length === 0 && (
                       <p className="file-type-error">
-                        ⚠️ No compatible files found. Supported file types: HTML, CSS, JS, and images (JPG, PNG, GIF, WebP, SVG). Files larger than 5MB (images) or 10MB (others) are excluded.
+                        No compatible files found. Supported file types: HTML, CSS, JS, and images (JPG, PNG, GIF, WebP, SVG). Files larger than 5MB (images) or 10MB (others) are excluded.
                       </p>
                     )}
                     

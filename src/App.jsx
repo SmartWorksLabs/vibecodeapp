@@ -858,62 +858,178 @@ function App() {
       // Mark as internal update to prevent reload loop
       isInternalUpdateRef.current = true;
       
-      // Update local file content if there are pending changes
+      // Build updated files array with pending changes applied BEFORE saving
+      // This ensures we save the latest changes without relying on async state updates
+      // IMPORTANT: Don't update state here - just build the files to save
+      // The UI already shows the changes (they're in the iframe), so we don't want to touch state
+      let filesToSave = projectFiles
+      
+      // Apply pending changes directly to the files array (don't update state - causes UI revert)
       if (pendingTextChanges.size > 0) {
-        pendingTextChanges.forEach((change) => {
-          updateHTMLFile(change.newText, change.element, change.fileName);
-        });
+        filesToSave = projectFiles.map(file => {
+          // Check if this file has pending changes
+          const fileChanges = Array.from(pendingTextChanges.values()).filter(
+            change => change.fileName === file.name
+          )
+          
+          if (fileChanges.length > 0 && file.type === 'html') {
+            // Apply all changes for this file using the same logic as updateHTMLFile
+            let updatedContent = file.content
+            fileChanges.forEach(change => {
+              // Find and replace the element's text in the HTML content
+              const element = change.element
+              if (element && updatedContent) {
+                const elementTag = element.tagName?.toLowerCase()
+                const elementId = element.id || null
+                const elementClass = element.className ? 
+                  (typeof element.className === 'string' ? element.className : element.className.baseVal || '') : 
+                  null
+                const originalText = element.textContent || element.innerText || ''
+                const hasChildren = element.children && element.children.length > 0
+                
+                // Use the same replacement logic as updateHTMLFile
+                if (elementId) {
+                  const escapedId = elementId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+                  if (!hasChildren) {
+                    const idRegex = new RegExp(`(<${elementTag}[^>]*id=["']${escapedId}["'][^>]*>)([^<]*?)(</${elementTag}>)`, 'gis')
+                    if (idRegex.test(updatedContent)) {
+                      updatedContent = updatedContent.replace(idRegex, `$1${change.newText}$3`)
+                    }
+                  } else {
+                    const idRegexWithText = new RegExp(`(<${elementTag}[^>]*id=["']${escapedId}["'][^>]*>)([^<]+?)(<)`, 'gis')
+                    if (idRegexWithText.test(updatedContent)) {
+                      updatedContent = updatedContent.replace(idRegexWithText, `$1${change.newText}$3`)
+                    }
+                  }
+                } else if (elementClass) {
+                  const firstClass = elementClass.split(' ')[0]
+                  const escapedClass = firstClass.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+                  if (!hasChildren) {
+                    const classRegex = new RegExp(`(<${elementTag}[^>]*class=["'][^"']*${escapedClass}[^"']*["'][^>]*>)([^<]*?)(</${elementTag}>)`, 'gis')
+                    if (classRegex.test(updatedContent)) {
+                      updatedContent = updatedContent.replace(classRegex, `$1${change.newText}$3`)
+                    }
+                  }
+                } else if (originalText && updatedContent.includes(originalText)) {
+                  // Fallback: simple text replacement
+                  updatedContent = updatedContent.replace(originalText, change.newText)
+                }
+              }
+            })
+            
+            return {
+              ...file,
+              content: updatedContent
+            }
+          }
+          
+          return file
+        })
+        
+        // DON'T update state here - it causes UI to revert
+        // The UI already shows the changes (they're in the iframe/preview)
+        // We just need to save them to Supabase
       }
       
-      // Clear internal update flag after a short delay
-      setTimeout(() => {
-        isInternalUpdateRef.current = false;
-      }, 100);
-      
-      // Clear pending changes after saving
-      setPendingTextChanges(new Map());
-      
-      // Clear text editing state after save
-      setIsTextEditing(false);
-      
       // Save to All Projects (Supabase) - always save, even if no pending changes
-      if (currentProjectName && projectFiles) {
+      // Store whether we had pending changes BEFORE clearing them
+      const hadPendingChanges = pendingTextChanges.size > 0
+      
+      if (currentProjectName && filesToSave) {
         console.log('=== SAVING TO ALL PROJECTS ===')
         console.log('Project name:', currentProjectName)
-        console.log('Files count:', projectFiles.length)
-        const result = await saveProjectToAllProjects(projectFiles, currentProjectName, false)
-        if (result.success) {
-          setHasBeenSavedToAllProjects(true)
-          // Update project name if it was changed (renamed)
-          // Only update if it was actually renamed to prevent triggering another save
-          if (result.wasRenamed && result.projectName && result.projectName !== currentProjectName) {
-            // Update immediately since we know it was renamed and saved successfully
-            // The wasRenamed flag ensures we won't check for duplicates again
-            setCurrentProjectName(result.projectName)
-          } else if (result.projectName && result.projectName !== currentProjectName) {
-            // If not explicitly renamed but name changed, use setTimeout to be safe
-            setTimeout(() => {
-              setCurrentProjectName(result.projectName)
-            }, 100)
-          }
-          // Clear any pending navigation since we just saved manually
-          setPendingNavigation(null)
-          setShowSavePrompt(false)
-          console.log('✅ Project saved to All Projects successfully')
-        } else {
-          // Check if save was cancelled by user
-          if (result.error === 'Save cancelled by user') {
-            console.log('Save was cancelled by user')
+        console.log('Files count:', filesToSave.length)
+        console.log('Is loaded from All Projects:', isLoadedFromAllProjects)
+        console.log('Has been saved:', hasBeenSavedToAllProjects)
+        
+        // ALWAYS use saveProject (update) if project has been saved before
+        // This prevents creating duplicates on subsequent saves
+        if (isLoadedFromAllProjects || hasBeenSavedToAllProjects) {
+          console.log('Project already exists - updating instead of creating new')
+          try {
+            const { saveProject: updateProject } = await import('./services/projectService')
+            const filesForCloud = filesToSave.map(file => ({
+              name: file.name,
+              content: file.isImage && file.dataUrl ? file.dataUrl : file.content,
+              type: file.type || file.name.split('.').pop(),
+            }))
+            const result = await updateProject(currentProjectName, filesForCloud, user.id)
+            console.log('✅ Project updated in All Projects successfully')
+            
+            // DON'T update projectFiles state - it causes PreviewPane to reload and revert UI
+            // The UI already shows the changes (they're in the iframe)
+            // State will update naturally when user makes next change via updateHTMLFile
+            
+            // Clear pending changes
+            setPendingTextChanges(new Map());
+            
+            // Clear text editing state after save
+            setIsTextEditing(false);
+            
+            setHasBeenSavedToAllProjects(true)
+            setSaveStatus('saved')
+            setPendingNavigation(null)
+            setShowSavePrompt(false)
+            
+            // Clear internal update flag
+            isInternalUpdateRef.current = false;
+            
+            console.log('=== ALL PROJECTS UPDATE COMPLETED ===')
+          } catch (error) {
+            console.error('❌ Failed to update project in All Projects:', error)
             setSaveStatus('unsaved')
             isInternalUpdateRef.current = false
+            alert('Failed to save project. Please try again.')
             return
           }
-          console.error('❌ Failed to save project to All Projects')
-          setSaveStatus('unsaved');
-          isInternalUpdateRef.current = false;
-          return;
+        } else {
+          // New project - use saveProjectToAllProjects which handles duplicate checking
+          // This will create a new project and set hasBeenSavedToAllProjects to true
+          const result = await saveProjectToAllProjects(filesToSave, currentProjectName, false)
+          if (result.success) {
+            // DON'T update projectFiles state - it causes PreviewPane to reload and revert UI
+            // The UI already shows the changes (they're in the iframe)
+            // State will update naturally when user makes next change via updateHTMLFile
+            
+            // Clear pending changes
+            setPendingTextChanges(new Map());
+            
+            // Clear text editing state after save
+            setIsTextEditing(false);
+            
+            // CRITICAL: Set this to true so next save uses update instead of create
+            setHasBeenSavedToAllProjects(true)
+            // Update project name if it was changed (renamed)
+            // Only update if it was actually renamed to prevent triggering another save
+            if (result.wasRenamed && result.projectName && result.projectName !== currentProjectName) {
+              // Update immediately since we know it was renamed and saved successfully
+              // The wasRenamed flag ensures we won't check for duplicates again
+              setCurrentProjectName(result.projectName)
+            } else if (result.projectName && result.projectName !== currentProjectName) {
+              // If not explicitly renamed but name changed, use setTimeout to be safe
+              setTimeout(() => {
+                setCurrentProjectName(result.projectName)
+              }, 100)
+            }
+            // Clear any pending navigation since we just saved manually
+            setPendingNavigation(null)
+            setShowSavePrompt(false)
+            console.log('✅ Project saved to All Projects successfully')
+          } else {
+            // Check if save was cancelled by user
+            if (result.error === 'Save cancelled by user') {
+              console.log('Save was cancelled by user')
+              setSaveStatus('unsaved')
+              isInternalUpdateRef.current = false
+              return
+            }
+            console.error('❌ Failed to save project to All Projects')
+            setSaveStatus('unsaved');
+            isInternalUpdateRef.current = false;
+            return;
+          }
+          console.log('=== ALL PROJECTS SAVE COMPLETED ===')
         }
-        console.log('=== ALL PROJECTS SAVE COMPLETED ===')
       } else {
         console.warn('Cannot save - missing projectName or projectFiles', { 
           hasProjectName: !!currentProjectName, 

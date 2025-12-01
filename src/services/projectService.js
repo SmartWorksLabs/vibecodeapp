@@ -61,19 +61,31 @@ export const saveProjectAsNew = async (projectName, files, userId) => {
  */
 export const saveProject = async (projectName, files, userId) => {
   try {
-    // Find existing project by name and user
-    const { data: existingProjects, error: findError } = await supabase
+    console.log('💾 saveProject: Looking for existing project:', projectName, 'user:', userId)
+    
+    // Find existing ACTIVE project by name and user (exclude deleted projects)
+    // Filter out deleted projects by checking deleted_at is null
+    const { data: existingProject, error: findError } = await supabase
       .from('projects')
-      .select('id')
+      .select('id, deleted_at')
       .eq('name', projectName)
       .eq('user_id', userId)
+      .is('deleted_at', null) // Only find active (non-deleted) projects
       .maybeSingle()
 
-    let projectId
+    if (findError) {
+      console.error('❌ Error finding project:', findError)
+      throw findError
+    }
 
-    if (existingProjects && existingProjects.id) {
-      // Update existing project and clear deleted_at if it was soft-deleted
-      projectId = existingProjects.id
+    let projectId
+    let wasUpdate = false
+
+    if (existingProject && existingProject.id) {
+      // Update existing project
+      projectId = existingProject.id
+      wasUpdate = true
+      console.log('✅ Found existing project, will UPDATE:', projectId)
       // Try to update with deleted_at: null, but handle gracefully if column doesn't exist
       try {
         const { error: updateError } = await supabase
@@ -98,7 +110,8 @@ export const saveProject = async (projectName, files, userId) => {
         }
       }
     } else {
-      // Create new project
+      // No existing project found - create new one
+      console.log('⚠️ No existing project found, will CREATE new project:', projectName)
       const { data: newProject, error: projectError } = await supabase
         .from('projects')
         .insert({
@@ -110,6 +123,7 @@ export const saveProject = async (projectName, files, userId) => {
 
       if (projectError) throw projectError
       projectId = newProject.id
+      console.log('✅ Created new project:', projectId)
     }
 
     // Delete existing files for this project
@@ -155,9 +169,10 @@ export const saveProject = async (projectName, files, userId) => {
       }
     }
 
+    console.log('✅ saveProject completed successfully. Project ID:', projectId, 'Action:', wasUpdate ? 'UPDATED' : 'CREATED')
     return { success: true, projectId }
   } catch (error) {
-    console.error('Error saving project:', error)
+    console.error('❌ Error saving project:', error)
     throw error
   }
 }
