@@ -1,38 +1,471 @@
-import { useRef, useState, useEffect, Fragment } from 'react'
+import { useRef, useState, useEffect, useMemo, Fragment } from 'react'
 import { useAuth } from '../contexts/AuthContext'
+import { listProjects, loadProject, deleteProject, softDeleteProject } from '../services/projectService'
 import './FileUploader.css'
 
 function FileUploader({ onProjectLoad }) {
+  // Auth state - must be declared first
+  const { user, signIn, signUp, signOut } = useAuth()
+  
+  // Helper function to load cached projects
+  const getCachedProjects = () => {
+    try {
+      const stored = localStorage.getItem('vibecanvas_all_projects_cache')
+      if (stored) {
+        const cachedData = JSON.parse(stored)
+        if (cachedData.projects && Array.isArray(cachedData.projects)) {
+          console.log('📦 Loaded cache during init:', cachedData.projects.length)
+          return cachedData.projects
+        }
+      }
+    } catch (e) {
+      // Ignore errors
+    }
+    return []
+  }
+  
+  // Initialize both ref and state from cache in ONE go (synchronous, before first render)
+  // This ensures cache is available immediately on first render, preventing any flash
+  const cachedProjects = getCachedProjects()
+  const displayProjectsRef = useRef(cachedProjects)
+  
+  // Initialize state directly from cache (synchronous, available on first render)
   const [isDragging, setIsDragging] = useState(false)
-  const [recentProjects, setRecentProjects] = useState([])
-  const [showAllProjects, setShowAllProjects] = useState(false)
+  const [allProjects, setAllProjects] = useState(cachedProjects)
+  
+  // Create a display state that always has data if ref has data (prevents flash)
+  // Use useMemo to prevent recalculation on every render
+  const displayProjects = useMemo(() => {
+    return allProjects.length > 0 ? allProjects : (displayProjectsRef.current || [])
+  }, [allProjects])
+  
+  // Keep ref and state in sync - update ref whenever state changes
+  useEffect(() => {
+    if (allProjects.length > 0) {
+      displayProjectsRef.current = allProjects
+    }
+  }, [allProjects])
+  const [recentlyDeletedProjects, setRecentlyDeletedProjects] = useState(() => {
+    // Initialize from cache synchronously
+    try {
+      const stored = localStorage.getItem('vibecanvas_recently_deleted_projects')
+      if (stored) {
+        const data = JSON.parse(stored)
+        if (Array.isArray(data) && data.length > 0) {
+          if (typeof data[0] === 'string') {
+            // Old format - convert to new format
+            return data.map(id => ({ projectId: id, deletedAt: Date.now() }))
+          } else {
+            // New format
+            return data
+          }
+        }
+      }
+    } catch (e) {
+      // Ignore errors, just return empty array
+    }
+    return []
+  })
+  const [activeTab, setActiveTab] = useState('all') // 'all' or 'deleted'
+  const [selectedProjects, setSelectedProjects] = useState(new Set())
   const [showFilesInfo, setShowFilesInfo] = useState(false)
   const [tooltipPosition, setTooltipPosition] = useState({ top: 0, right: 0 })
   const folderInputRef = useRef(null)
   const fileInputRef = useRef(null)
   const openFilesButtonRef = useRef(null)
   
-  // Auth state
-  const { user, signIn, signUp, signOut } = useAuth()
+  // Delete confirmation modal state
+  const [deleteModal, setDeleteModal] = useState({ show: false, project: null, isPermanent: false })
+  const recentlyDeletedIdsRef = useRef(new Set())
+  const pauseRefreshRef = useRef(false)
+  const hasLoadedFromCacheRef = useRef(false) // Track if we've loaded from cache
+  const isInitialLoadRef = useRef(true) // Track if this is the initial load
+  
+  // Initialize recentlyDeletedIdsRef from cached data
+  useEffect(() => {
+    if (recentlyDeletedProjects.length > 0) {
+      recentlyDeletedIdsRef.current = new Set(recentlyDeletedProjects.map(p => p.projectId))
+    }
+    // Mark that we've loaded from cache
+    if (allProjects.length > 0) {
+      hasLoadedFromCacheRef.current = true
+    }
+  }, []) // Only run once on mount
+  
+  // Verify cached data is for current user (runs when user becomes available)
+  // Don't clear state immediately - wait for fresh data to prevent flash
+  useEffect(() => {
+    if (user) {
+      // Verify all projects cache is for current user
+      try {
+        const stored = localStorage.getItem('vibecanvas_all_projects_cache')
+        if (stored) {
+          const cachedData = JSON.parse(stored)
+          // If cache is for a different user, clear localStorage but keep state visible
+          // until fresh data loads (prevents flash)
+          if (cachedData.userId !== user.id) {
+            localStorage.removeItem('vibecanvas_all_projects_cache')
+            // Clear the ref so we know to update when fresh data arrives
+            hasLoadedFromCacheRef.current = false
+            // Don't clear state - let loadAllProjects update it with fresh data
+          } else {
+            // Cache is for correct user - mark that we have valid cached data
+            hasLoadedFromCacheRef.current = true
+          }
+        }
+      } catch (e) {
+        // Ignore errors
+      }
+    } else {
+      // User logged out - clear cache but keep state visible during transition
+      // Only clear state if we're sure user is actually logged out (not just loading)
+      // This prevents flash during auth state changes
+      localStorage.removeItem('vibecanvas_all_projects_cache')
+      hasLoadedFromCacheRef.current = false
+      // Don't clear state immediately - let it persist until component unmounts or user logs in
+    }
+  }, [user])
+  
+  // Save recently deleted projects to localStorage whenever it changes
+  useEffect(() => {
+    if (recentlyDeletedProjects.length > 0) {
+      localStorage.setItem('vibecanvas_recently_deleted_projects', JSON.stringify(recentlyDeletedProjects))
+      recentlyDeletedIdsRef.current = new Set(recentlyDeletedProjects.map(p => p.projectId))
+    } else {
+      localStorage.removeItem('vibecanvas_recently_deleted_projects')
+      recentlyDeletedIdsRef.current = new Set()
+    }
+  }, [recentlyDeletedProjects])
+  
+  // Save all projects to localStorage cache whenever it changes (for instant load on refresh)
+  useEffect(() => {
+    if (user && allProjects.length > 0) {
+      const cacheData = {
+        userId: user.id,
+        projects: allProjects,
+        timestamp: Date.now()
+      }
+      localStorage.setItem('vibecanvas_all_projects_cache', JSON.stringify(cacheData))
+    } else if (!user) {
+      // Clear cache when user logs out
+      localStorage.removeItem('vibecanvas_all_projects_cache')
+    }
+  }, [allProjects, user])
   const [isLogin, setIsLogin] = useState(true)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [authError, setAuthError] = useState('')
   const [authLoading, setAuthLoading] = useState(false)
   
-  const MAX_INITIAL_PROJECTS = 3
-
-  // Load recent projects from localStorage
+  // Check for deleted_at column on mount and show migration notice if needed
   useEffect(() => {
-    const stored = localStorage.getItem('vibecanvas_recent_projects')
-    if (stored) {
+    const checkColumn = async () => {
       try {
-        setRecentProjects(JSON.parse(stored))
+        const { data, error } = await listProjects(user?.id || '')
+        if (error && error.message?.includes('deleted_at')) {
+          console.warn('⚠️ deleted_at column missing. Run this SQL in Supabase SQL Editor:')
+          console.warn('ALTER TABLE projects ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ NULL;')
+        }
       } catch (e) {
-        console.error('Error loading recent projects:', e)
+        // Ignore - will be handled by loadAllProjects
       }
     }
-  }, [])
+    if (user) {
+      checkColumn()
+    }
+  }, [user])
+  
+  // Load all projects from user account (Supabase) - All Projects is the source of truth
+  const loadAllProjects = async () => {
+    // If no user yet, use cache immediately (don't fetch from Supabase)
+    // This ensures cached data displays immediately on first render
+    if (!user) {
+      const cached = getCachedProjects()
+      if (cached.length > 0) {
+        // Update display ref and state with cached data
+        displayProjectsRef.current = cached
+        setAllProjects(cached)
+        hasLoadedFromCacheRef.current = true
+        console.log('Loaded projects from cache (user not loaded yet):', cached.length)
+      } else {
+        // No cache available, keep empty state
+        if (!hasLoadedFromCacheRef.current && allProjects.length === 0) {
+          setAllProjects([])
+        }
+      }
+      return
+    }
+    
+    // Mark that initial load is complete
+    isInitialLoadRef.current = false
+    
+    // Skip refresh if we just deleted something (pause for 5 seconds)
+    if (pauseRefreshRef.current) {
+      console.log('Skipping refresh - pause active after delete')
+      return
+    }
+    
+    try {
+      const projects = await listProjects(user.id)
+      
+      // Format projects for display
+      const allFormatted = projects.map(project => ({
+        name: project.name,
+        fileCount: project.fileCount || 0,
+        path: project.name,
+        isFolder: true,
+        lastSaved: project.updated_at || project.created_at,
+        projectId: project.id,
+        deletedAt: project.deleted_at // Include deleted_at from database if available
+      }))
+      
+      // Read recently deleted projects from localStorage to get the latest state
+      // This ensures we have the most up-to-date list even if state hasn't updated yet
+      let currentDeletedProjects = recentlyDeletedProjects
+      try {
+        const stored = localStorage.getItem('vibecanvas_recently_deleted_projects')
+        if (stored) {
+          const data = JSON.parse(stored)
+          if (Array.isArray(data) && data.length > 0) {
+            if (typeof data[0] === 'object' && data[0].projectId) {
+              currentDeletedProjects = data
+            }
+          }
+        }
+      } catch (e) {
+        console.error('Error reading recently deleted from localStorage:', e)
+      }
+      
+      // Filter out projects that are deleted
+      // Priority: Use database deleted_at if available, otherwise fall back to localStorage
+      const deletedIds = new Set()
+      
+      // First, add projects that have deleted_at set in the database (timestamp string = deleted)
+      allFormatted.forEach(project => {
+        // deletedAt will be:
+        // - a timestamp string if deleted (e.g., "2024-01-01T00:00:00Z")
+        // - null if restored/active
+        // - undefined if column doesn't exist
+        if (project.deletedAt && typeof project.deletedAt === 'string') {
+          // Project is deleted in database
+          deletedIds.add(project.projectId)
+        }
+      })
+      
+      // Then, add projects from localStorage ONLY if deleted_at column doesn't exist in DB
+      // (for backwards compatibility - if column exists, DB is source of truth)
+      currentDeletedProjects.forEach(deleted => {
+        const dbProject = allFormatted.find(p => p.projectId === deleted.projectId)
+        // Only use localStorage entry if:
+        // 1. The project exists in DB
+        // 2. The deleted_at column doesn't exist (undefined) - meaning we're using localStorage as fallback
+        // If deleted_at is null in DB, that means it's restored, so don't use localStorage
+        if (dbProject && dbProject.deletedAt === undefined) {
+          // Column doesn't exist, use localStorage
+          deletedIds.add(deleted.projectId)
+        }
+      })
+      
+      const activeProjects = allFormatted.filter(project => !deletedIds.has(project.projectId))
+      
+      // Update recently deleted projects with current data from Supabase
+      // Only show projects in Recently Deleted if they still exist in Supabase
+      // Important: Keep ALL projects from localStorage, even if they have the same name
+      // Each project is unique by projectId, so multiple projects with same name can exist
+      const deletedProjectsWithData = currentDeletedProjects.map(deleted => {
+        const currentProject = allFormatted.find(p => p.projectId === deleted.projectId)
+        if (currentProject) {
+          // Update with current data from Supabase, but keep the deletedAt timestamp
+          return {
+            ...currentProject,
+            deletedAt: deleted.deletedAt || currentProject.deletedAt || Date.now()
+          }
+        }
+        // Project might not exist in Supabase anymore, but keep it in Recently Deleted
+        return deleted
+      }).filter(p => p.name && p.projectId) // Only keep projects that have valid data
+      
+      // Always update display ref FIRST (before state) to prevent flash
+      // This ensures the ref always has the latest data immediately
+      if (activeProjects.length > 0) {
+        displayProjectsRef.current = activeProjects
+        setAllProjects(activeProjects)
+        hasLoadedFromCacheRef.current = false // Mark that we now have fresh data
+      } else {
+        // If fresh data is empty, keep the ref with cached data (don't clear it)
+        // Only clear state if we truly have no cached data
+        if (!hasLoadedFromCacheRef.current || displayProjectsRef.current.length === 0) {
+          displayProjectsRef.current = []
+          setAllProjects([])
+        }
+        // Otherwise, keep showing cached data in ref, don't update state
+        hasLoadedFromCacheRef.current = false
+      }
+      // Update recently deleted projects - preserve all projects, even with same names
+      // Merge: keep existing projects and update with fresh data from Supabase
+      setRecentlyDeletedProjects(prev => {
+        // Create a map of existing projects by ID for quick lookup
+        const existingMap = new Map(prev.map(p => [p.projectId, p]))
+        
+        // Update existing projects with fresh data from Supabase, or keep them as-is
+        const updated = deletedProjectsWithData.map(deleted => {
+          const existing = existingMap.get(deleted.projectId)
+          if (existing) {
+            // Merge: use fresh data from Supabase but preserve deletedAt timestamp
+            return {
+              ...deleted,
+              deletedAt: existing.deletedAt || deleted.deletedAt || Date.now()
+            }
+          }
+          return deleted
+        })
+        
+        // Add any projects from prev that aren't in deletedProjectsWithData
+        // (in case they were deleted but don't exist in Supabase anymore)
+        prev.forEach(existing => {
+          if (!updated.find(p => p.projectId === existing.projectId)) {
+            updated.push(existing)
+          }
+        })
+        
+        // Check if there are actual changes
+        const prevIds = new Set(prev.map(p => p.projectId))
+        const newIds = new Set(updated.map(p => p.projectId))
+        const hasChanges = prevIds.size !== newIds.size || ![...prevIds].every(id => newIds.has(id)) ||
+          prev.some(p => {
+            const updatedP = updated.find(up => up.projectId === p.projectId)
+            return !updatedP || updatedP.name !== p.name || updatedP.deletedAt !== p.deletedAt
+          })
+        
+        if (hasChanges) {
+          console.log('Updated Recently Deleted:', {
+            prevCount: prev.length,
+            newCount: updated.length,
+            projects: updated.map(p => ({ name: p.name, id: p.projectId }))
+          })
+          return updated
+        }
+        return prev
+      })
+      
+      console.log('Loaded projects:', {
+        totalFromSupabase: projects.length,
+        active: activeProjects.length,
+        deleted: deletedProjectsWithData.length
+      })
+    } catch (error) {
+      console.error('Error loading all projects:', error)
+      // Don't clear projects on error - keep cached data visible
+      // This prevents the flash of empty state if network request fails
+      // The cached data will remain visible until next successful load
+    }
+  }
+  
+  // Restore a project from recently deleted
+  const handleRestoreProject = async (projectId) => {
+    setRecentlyDeletedProjects(prev => prev.filter(p => p.projectId !== projectId))
+    setSelectedProjects(prev => {
+      const newSet = new Set(prev)
+      newSet.delete(projectId)
+      return newSet
+    })
+    // Reload projects to show restored project
+    await loadAllProjects()
+  }
+  
+  // Restore multiple projects
+  const handleRestoreSelected = async () => {
+    const selectedArray = Array.from(selectedProjects)
+    setRecentlyDeletedProjects(prev => prev.filter(p => !selectedProjects.has(p.projectId)))
+    setSelectedProjects(new Set())
+    await loadAllProjects()
+  }
+  
+  // Permanently delete a project
+  const handlePermanentDelete = async (projectId) => {
+    try {
+      await deleteProject(projectId, user.id)
+      setRecentlyDeletedProjects(prev => prev.filter(p => p.projectId !== projectId))
+      setSelectedProjects(prev => {
+        const newSet = new Set(prev)
+        newSet.delete(projectId)
+        return newSet
+      })
+      console.log('✅ Project permanently deleted')
+    } catch (error) {
+      console.error('❌ Error permanently deleting project:', error)
+      alert(`Failed to permanently delete project: ${error.message || 'Unknown error'}`)
+    }
+  }
+  
+  // Permanently delete multiple projects
+  const handlePermanentDeleteSelected = async () => {
+    const selectedArray = Array.from(selectedProjects)
+    try {
+      await Promise.all(selectedArray.map(id => deleteProject(id, user.id)))
+      setRecentlyDeletedProjects(prev => prev.filter(p => !selectedProjects.has(p.projectId)))
+      setSelectedProjects(new Set())
+      console.log('✅ Permanently deleted', selectedArray.length, 'project(s)')
+    } catch (error) {
+      console.error('❌ Error permanently deleting projects:', error)
+      alert(`Failed to permanently delete projects: ${error.message || 'Unknown error'}`)
+    }
+  }
+  
+  // Toggle project selection
+  const handleToggleSelection = (projectId) => {
+    setSelectedProjects(prev => {
+      const newSet = new Set(prev)
+      if (newSet.has(projectId)) {
+        newSet.delete(projectId)
+      } else {
+        newSet.add(projectId)
+      }
+      return newSet
+    })
+  }
+  
+  // Select all visible projects
+  const handleSelectAll = () => {
+    const projects = activeTab === 'all' 
+      ? displayProjects
+      : recentlyDeletedProjects
+    const allIds = new Set(projects.map(p => p.projectId))
+    setSelectedProjects(allIds)
+  }
+  
+  // Deselect all
+  const handleDeselectAll = () => {
+    setSelectedProjects(new Set())
+  }
+
+  // Load all projects on mount and when user changes
+  useEffect(() => {
+    console.log('🔄 FileUploader useEffect triggered. User:', user?.id)
+    
+    // If user exists, fetch fresh data (cache is already visible from initialization)
+    // Cache was loaded synchronously during component initialization, so it's already displayed
+    if (user) {
+      // Small delay to let cached data render first, then fetch fresh data
+      const timeoutId = setTimeout(() => {
+        loadAllProjects()
+      }, 200)
+      
+      // Set up refresh interval
+      const interval = setInterval(() => {
+        loadAllProjects()
+      }, 5000) // Refresh every 5 seconds
+      
+      return () => {
+        clearTimeout(timeoutId)
+        clearInterval(interval)
+      }
+    }
+    // If no user, cache is already loaded during initialization, nothing to do
+  }, [user]) // Re-run when user logs in/out
+
+  // Refresh all projects periodically (to catch new saves) - only if user is logged in
+  // Note: This is now handled in the main useEffect above with a 5-second interval
 
   // Handle 'i' key press to toggle info tooltip
   useEffect(() => {
@@ -47,151 +480,8 @@ function FileUploader({ onProjectLoad }) {
     return () => window.removeEventListener('keydown', handleKeyPress)
   }, [])
 
-  const saveToRecentProjects = (projectName, files, isFolder = true) => {
-    // Check if files have content before saving
-    const filesWithContent = files.filter(f => f.content !== undefined && f.content !== null)
-    
-    if (filesWithContent.length === 0) {
-      console.warn('No files with content to save to recent projects')
-      return
-    }
-    
-    const project = {
-      name: projectName || 'Untitled Project',
-      fileCount: files.length,
-      lastOpened: new Date().toISOString(),
-      isFolder: isFolder, // Track if this was opened as a folder or individual files
-      // Store full file content so we can reload the project
-      files: files.map(f => {
-        // Ensure we're storing the actual content
-        const fileData = { 
-          name: f.name, 
-          type: f.type,
-          path: f.path || f.name,
-          isImage: f.isImage || false,
-        }
-        
-        // Only include content if it exists
-        if (f.content !== undefined && f.content !== null) {
-          fileData.content = f.content
-        }
-        
-        // Include dataUrl for images if it exists
-        if (f.dataUrl) {
-          fileData.dataUrl = f.dataUrl
-        }
-        
-        return fileData
-      }),
-      path: files[0]?.path?.split('/')[0] || projectName // Store folder path for reference
-    }
-
-    const updated = [
-      project,
-      ...recentProjects.filter(p => p.name !== project.name && p.path !== project.path)
-    ].slice(0, 10) // Keep last 10
-
-    setRecentProjects(updated)
-    try {
-      const serialized = JSON.stringify(updated)
-      localStorage.setItem('vibecanvas_recent_projects', serialized)
-      console.log('Saved recent project with', filesWithContent.length, 'files containing content')
-    } catch (e) {
-      console.warn('Could not save recent projects to localStorage (may be too large):', e)
-      // If storage is full, try saving without file content
-      const projectsWithoutContent = updated.map(p => ({
-        ...p,
-        files: p.files.map(f => ({ name: f.name, type: f.type, path: f.path }))
-      }))
-      localStorage.setItem('vibecanvas_recent_projects', JSON.stringify(projectsWithoutContent))
-      console.warn('Saved recent projects without file content due to storage limits')
-    }
-  }
-
-  const openRecentProject = (project) => {
-    // Check if project has file content stored
-    if (!project.files || project.files.length === 0) {
-      console.warn('Recent project has no files stored, opening folder picker instead')
-      folderInputRef.current?.click()
-      return
-    }
-    
-    // Check if files have content
-    const filesWithContent = project.files.filter(f => f.content !== undefined && f.content !== null)
-    console.log('Recent project files check:', {
-      totalFiles: project.files.length,
-      filesWithContent: filesWithContent.length,
-      fileDetails: project.files.map(f => ({ name: f.name, hasContent: f.content !== undefined && f.content !== null }))
-    })
-    
-    // If no content, this is an old project - just open folder picker
-    if (filesWithContent.length === 0) {
-      console.warn('Recent project files have no content stored (old format), opening folder picker instead')
-      folderInputRef.current?.click()
-      return
-    }
-    
-    // Convert stored files back to the format expected by onProjectLoad
-    const files = project.files.map(f => {
-      const file = {
-        name: f.name,
-        type: f.type,
-        path: f.path || f.name,
-        isImage: f.isImage || false,
-        dataUrl: f.dataUrl || null
-      }
-      
-      // For images, content should be the dataUrl
-      if (f.isImage) {
-        // Use dataUrl as content if available, otherwise use stored content
-        file.content = f.dataUrl || f.content || ''
-        // Ensure dataUrl is set to the same value
-        if (!file.dataUrl && file.content) {
-          file.dataUrl = file.content
-        }
-        
-        // Check if it's a blob URL (invalid after page reload) and warn
-        if (file.content && file.content.startsWith('blob:')) {
-          console.warn(`Image ${f.name} has an invalid blob URL. Please re-open the project folder to fix.`)
-        }
-      } else {
-        // For non-images, use stored content
-        if (f.content !== undefined && f.content !== null) {
-          file.content = f.content
-        } else {
-          console.warn(`File ${f.name} has no content stored`)
-          file.content = ''
-        }
-      }
-      
-      return file
-    })
-    
-    console.log('Opening recent project:', project.name, 'with', files.length, 'files (', filesWithContent.length, 'with content)')
-    
-    // Update last opened time
-    const updated = recentProjects.map(p => 
-      p.path === project.path 
-        ? { ...p, lastOpened: new Date().toISOString() }
-        : p
-    )
-    setRecentProjects(updated)
-    try {
-      localStorage.setItem('vibecanvas_recent_projects', JSON.stringify(updated))
-    } catch (e) {
-      console.warn('Could not update recent projects:', e)
-    }
-    
-    // Load the project
-    onProjectLoad(files)
-  }
-
-  const removeRecentProject = (projectPath, e) => {
-    e.stopPropagation() // Prevent opening the project when clicking X
-    const updated = recentProjects.filter(p => p.path !== projectPath)
-    setRecentProjects(updated)
-    localStorage.setItem('vibecanvas_recent_projects', JSON.stringify(updated))
-  }
+  // Removed saveToRecentProjects, openRecentProject, removeRecentProject - no longer needed
+  // Projects are now only loaded from file system
 
   const handleAuthSubmit = async (e) => {
     e.preventDefault()
@@ -309,13 +599,23 @@ function FileUploader({ onProjectLoad }) {
     }
     
     if (projectFiles.length > 0) {
-      // Get project name from folder name or first HTML file
-      const folderName = projectFiles[0]?.path?.split('/')[0] || 
-                        projectFiles.find(f => f.type === 'html')?.name?.replace('.html', '') || 
-                        'Untitled Project'
-      // Use the isFolder parameter passed to readFiles
-      saveToRecentProjects(folderName, projectFiles, isFolder)
-      onProjectLoad(projectFiles)
+      // Extract folder name from file paths if loading a folder
+      let folderName = null
+      if (isFolder && projectFiles.length > 0) {
+        // Get the first file's path and extract folder name
+        const firstPath = projectFiles[0].path
+        if (firstPath && firstPath.includes('/')) {
+          // Extract folder name from path (e.g., "my-project/index.html" -> "my-project")
+          folderName = firstPath.split('/')[0]
+        } else if (firstPath && firstPath.includes('\\')) {
+          // Handle Windows paths
+          folderName = firstPath.split('\\')[0]
+        }
+      }
+      
+      // Don't save here - App.jsx will handle all local saves
+      // This prevents duplicate entries in recent projects
+      onProjectLoad(projectFiles, false, folderName) // false = not from All Projects, folderName = default name
     } else {
       console.warn('No valid files found to load')
     }
@@ -435,6 +735,12 @@ function FileUploader({ onProjectLoad }) {
           <div className="main-content">
             <h1 className="welcome-title">Welcome</h1>
             <p className="welcome-subtitle">Open a project to get started</p>
+            
+            <div className="welcome-info">
+              <p className="welcome-info-text">
+                <strong>Supported files:</strong> HTML, CSS, JavaScript (.html, .css, .js) and images (JPG, PNG, GIF, WEBP, SVG)
+              </p>
+            </div>
 
             <div className="quick-actions">
               <button 
@@ -447,10 +753,18 @@ function FileUploader({ onProjectLoad }) {
                 Open Folder
               </button>
               <div className="action-button-wrapper">
-                <button 
+                <div 
                   ref={openFilesButtonRef}
                   className="action-button secondary"
                   onClick={() => fileInputRef.current?.click()}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault()
+                      fileInputRef.current?.click()
+                    }
+                  }}
                   title="Select HTML, CSS, and JS files together (hold Cmd/Ctrl to select multiple)"
                 >
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -493,7 +807,7 @@ function FileUploader({ onProjectLoad }) {
                   >
                     <span className="info-icon-text">i</span>
                   </button>
-                </button>
+                </div>
                 {showFilesInfo && (
                   <div 
                     className="info-tooltip"
@@ -526,6 +840,354 @@ function FileUploader({ onProjectLoad }) {
                   </div>
                 )}
               </div>
+            </div>
+
+            {/* Projects Tabs */}
+            <div className="projects-tabs-container">
+              <div className="projects-tabs">
+                <button
+                  className={`projects-tab ${activeTab === 'all' ? 'active' : ''}`}
+                  onClick={() => {
+                    setActiveTab('all')
+                    setSelectedProjects(new Set())
+                  }}
+                >
+                  All Projects
+                  {displayProjects.length > 0 && <span className="tab-count">({displayProjects.length})</span>}
+                </button>
+                <button
+                  className={`projects-tab ${activeTab === 'deleted' ? 'active' : ''}`}
+                  onClick={() => {
+                    setActiveTab('deleted')
+                    setSelectedProjects(new Set())
+                  }}
+                >
+                  Recently Deleted
+                  {recentlyDeletedProjects.length > 0 && <span className="tab-count">({recentlyDeletedProjects.length})</span>}
+                </button>
+              </div>
+
+              {/* Bulk Actions */}
+              {selectedProjects.size > 0 && (
+                <div className="bulk-actions">
+                  <span className="bulk-actions-count">{selectedProjects.size} selected</span>
+                  {activeTab === 'all' && (
+                    <button
+                      className="bulk-action-button delete"
+                      onClick={() => {
+                        const selectedProjectsArray = Array.from(selectedProjects).map(id => {
+                          // Use displayProjects to ensure we find projects even when user is loading
+                          const project = displayProjects.find(p => p.projectId === id)
+                          return project
+                        }).filter(Boolean)
+                        if (selectedProjectsArray.length > 0) {
+                          setDeleteModal({ show: true, project: selectedProjectsArray[0], isPermanent: false, isBulk: true, projects: selectedProjectsArray })
+                        }
+                      }}
+                    >
+                      Delete
+                    </button>
+                  )}
+                  {activeTab === 'deleted' && (
+                    <>
+                      <button
+                        className="bulk-action-button restore"
+                        onClick={handleRestoreSelected}
+                      >
+                        Restore
+                      </button>
+                      <button
+                        className="bulk-action-button delete-permanent"
+                        onClick={() => {
+                          const selectedProjectsArray = Array.from(selectedProjects).map(id => {
+                            const project = recentlyDeletedProjects.find(p => p.projectId === id)
+                            return project
+                          }).filter(Boolean)
+                          if (selectedProjectsArray.length > 0 && window.confirm(`Permanently delete ${selectedProjectsArray.length} project(s)? This cannot be undone.`)) {
+                            handlePermanentDeleteSelected()
+                          }
+                        }}
+                      >
+                        Permanently Delete
+                      </button>
+                    </>
+                  )}
+                  <button
+                    className="bulk-action-button cancel"
+                    onClick={handleDeselectAll}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
+
+              {activeTab === 'all' && (
+                <>
+                  {/* Always render container - use displayProjects which never becomes empty if ref has data */}
+                  {displayProjects.length > 0 ? (
+                    <div className="recent-projects">
+                      <div className="projects-section-header">
+                        {/* Select All / Deselect All */}
+                        <div className="select-all-container">
+                          {selectedProjects.size === 0 ? (
+                            <button className="select-all-button" onClick={handleSelectAll}>
+                              Select All
+                            </button>
+                          ) : (
+                            <button className="select-all-button" onClick={handleDeselectAll}>
+                              Deselect All
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      <div className="projects-grid">
+                        {/* Use displayProjects which combines state and ref - never empty if either has data */}
+                        {displayProjects.map((project, displayIndex) => {
+                          const isSelected = selectedProjects.has(project.projectId)
+                          return (
+                        <div 
+                          key={`${project.projectId}-${project.deletedAt || displayIndex}-${displayIndex}`}
+                            className={`project-card ${isSelected ? 'selected' : ''}`}
+                          >
+                            <input
+                              type="checkbox"
+                              className="project-checkbox"
+                              checked={isSelected}
+                              onChange={(e) => {
+                                e.stopPropagation()
+                                handleToggleSelection(project.projectId)
+                              }}
+                              onClick={(e) => e.stopPropagation()}
+                            />
+                            <button 
+                              className="project-remove"
+                              onClick={(e) => {
+                                e.stopPropagation() // Prevent opening the project when clicking X
+                                
+                                if (!user) {
+                                  alert('Please sign in to delete projects')
+                                  return
+                                }
+                                
+                                if (!project.projectId) {
+                                  console.error('Project ID missing, cannot delete. Project:', project)
+                                  alert('Error: Project ID missing. Cannot delete project.')
+                                  return
+                                }
+                                
+                                // Show custom confirmation modal
+                                setDeleteModal({ show: true, project, isPermanent: false, isBulk: false })
+                              }}
+                              aria-label="Delete project"
+                            >
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <line x1="18" y1="6" x2="6" y2="18" />
+                                <line x1="6" y1="6" x2="18" y2="18" />
+                              </svg>
+                            </button>
+                            <div 
+                              className="project-card-content"
+                              onClick={async () => {
+                                if (selectedProjects.size > 0) {
+                                  // If in selection mode, toggle selection instead of opening
+                                  handleToggleSelection(project.projectId)
+                                  return
+                                }
+                                if (!user) {
+                                  alert('Please sign in to open projects')
+                                  return
+                                }
+                                
+                                try {
+                                  // Load project from user account (Supabase)
+                                  const projectData = await loadProject(project.name, user.id)
+                                  
+                                  // Convert to format expected by onProjectLoad
+                                  const files = projectData.files.map(file => {
+                                    const isImage = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg'].includes(file.type?.toLowerCase())
+                                    const dataUrl = isImage && file.content?.startsWith('data:') ? file.content : null
+                                    
+                                    return {
+                                      name: file.name,
+                                      content: file.content,
+                                      type: file.type,
+                                      path: file.name,
+                                      isImage: isImage,
+                                      dataUrl: dataUrl
+                                    }
+                                  })
+                                  
+                                  console.log('Opening project from All Projects:', project.name, 'with', files.length, 'files')
+                                  onProjectLoad(files, true, project.name) // true = loaded from All Projects, project.name = default name
+                                } catch (error) {
+                                  console.error('Error loading project:', error)
+                                  alert('Failed to load project. Please try again.')
+                                }
+                              }}
+                              title={`Click to open ${project.name}`}
+                            >
+                              <div className="project-icon">
+                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                                  <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                                </svg>
+                              </div>
+                          <div className="project-info">
+                            <div className="project-name" title={project.name}>
+                              {project.name.length > 20 ? `${project.name.substring(0, 20)}...` : project.name}
+                            </div>
+                            <div className="project-meta">
+                              {project.fileCount} file{project.fileCount !== 1 ? 's' : ''}
+                            </div>
+                          </div>
+                            </div>
+                          </div>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="empty-state">
+                      <div className="empty-icon">
+                        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                        </svg>
+                      </div>
+                      <p className="empty-text">No projects</p>
+                      <p className="empty-hint">Open a project to get started</p>
+                    </div>
+                  )}
+                </>
+              )}
+
+              {/* Recently Deleted Section */}
+              {activeTab === 'deleted' && recentlyDeletedProjects.length > 0 ? (
+                <div className="recent-projects">
+                  <div className="projects-section-header">
+                    <p className="section-subtitle">Projects will be permanently deleted after 30 days</p>
+                    {/* Select All / Deselect All */}
+                    <div className="select-all-container">
+                      {selectedProjects.size === 0 ? (
+                        <button className="select-all-button" onClick={handleSelectAll}>
+                          Select All
+                        </button>
+                      ) : (
+                        <button className="select-all-button" onClick={handleDeselectAll}>
+                          Deselect All
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  <div className="projects-grid">
+                    {recentlyDeletedProjects.map((project, displayIndex) => {
+                      const isSelected = selectedProjects.has(project.projectId)
+                      const deletedDate = new Date(project.deletedAt || Date.now())
+                      const daysAgo = Math.floor((Date.now() - deletedDate.getTime()) / (1000 * 60 * 60 * 24))
+                      return (
+                        <div 
+                          key={project.path || project.name || displayIndex} 
+                          className={`project-card deleted ${isSelected ? 'selected' : ''}`}
+                        >
+                          <input
+                            type="checkbox"
+                            className="project-checkbox"
+                            checked={isSelected}
+                            onChange={(e) => {
+                              e.stopPropagation()
+                              handleToggleSelection(project.projectId)
+                            }}
+                            onClick={(e) => e.stopPropagation()}
+                          />
+                          <button 
+                            className="project-remove"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              if (window.confirm(`Permanently delete "${project.name}"? This cannot be undone.`)) {
+                                handlePermanentDelete(project.projectId)
+                              }
+                            }}
+                            aria-label="Permanently delete project"
+                            title="Permanently delete"
+                          >
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                              <polyline points="3 6 5 6 21 6" />
+                              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                            </svg>
+                          </button>
+                          <div 
+                            className="project-card-content"
+                            onClick={async () => {
+                              if (selectedProjects.size > 0) {
+                                handleToggleSelection(project.projectId)
+                                return
+                              }
+                              // Open project without restoring it
+                              if (!user) {
+                                alert('Please sign in to open projects')
+                                return
+                              }
+                              
+                              try {
+                                const projectData = await loadProject(project.name, user.id)
+                                const files = projectData.files.map(file => {
+                                  const isImage = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg'].includes(file.type?.toLowerCase())
+                                  const dataUrl = isImage && file.content?.startsWith('data:') ? file.content : null
+                                  
+                                  return {
+                                    name: file.name,
+                                    content: file.content,
+                                    type: file.type,
+                                    path: file.name,
+                                    isImage: isImage,
+                                    dataUrl: dataUrl
+                                  }
+                                })
+                                
+                                // Open as a new project (false = not from All Projects)
+                                // This makes it behave exactly like opening a new folder/project
+                                // Recently Deleted is not affected at all
+                                console.log('Opening project from Recently Deleted:', project.name, 'with', files.length, 'files')
+                                onProjectLoad(files, false, project.name)
+                              } catch (error) {
+                                console.error('Error loading project:', error)
+                                alert('Failed to load project. Please try again.')
+                              }
+                            }}
+                            title={`Click to open ${project.name}`}
+                          >
+                            <div className="project-icon">
+                              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                              </svg>
+                            </div>
+                            <div className="project-info">
+                              <div className="project-name" title={project.name}>
+                                {project.name.length > 20 ? `${project.name.substring(0, 20)}...` : project.name}
+                              </div>
+                              <div className="project-meta">
+                                {(() => {
+                                  const deletedDate = new Date(project.deletedAt || Date.now())
+                                  const daysAgo = Math.floor((Date.now() - deletedDate.getTime()) / (1000 * 60 * 60 * 24))
+                                  return `${project.fileCount} file${project.fileCount !== 1 ? 's' : ''} • Deleted ${daysAgo === 0 ? 'today' : `${daysAgo} day${daysAgo !== 1 ? 's' : ''} ago`}`
+                                })()}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              ) : activeTab === 'deleted' ? (
+                <div className="empty-state">
+                  <div className="empty-icon">
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                      <polyline points="3 6 5 6 21 6" />
+                      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                    </svg>
+                  </div>
+                  <p className="empty-text">No recently deleted projects</p>
+                </div>
+              ) : null}
             </div>
 
             {/* Auth Section */}
@@ -601,79 +1263,10 @@ function FileUploader({ onProjectLoad }) {
                       </>
                     )}
                   </div>
+                  </div>
                 </div>
-              </div>
             )}
 
-            {/* Recent Projects - Only show when logged in */}
-            {user ? (
-              recentProjects.length > 0 ? (
-                <div className="recent-projects">
-                  <div className="section-header">
-                    <h2 className="section-title">Recent Projects</h2>
-                    {recentProjects.length > MAX_INITIAL_PROJECTS && (
-                      <button 
-                        className="view-all-button"
-                        onClick={() => setShowAllProjects(!showAllProjects)}
-                      >
-                        {showAllProjects ? 'Show Less' : `View All (${recentProjects.length})`}
-                      </button>
-                    )}
-                  </div>
-                  <div className="projects-grid">
-                    {(showAllProjects ? recentProjects : recentProjects.slice(0, MAX_INITIAL_PROJECTS)).map((project, displayIndex) => {
-                      return (
-                      <div 
-                        key={project.path || project.name || displayIndex} 
-                        className="project-card"
-                        onClick={() => openRecentProject(project)}
-                        title={`Click to open ${project.name}`}
-                      >
-                        <button 
-                          className="project-remove"
-                          onClick={(e) => removeRecentProject(project.path, e)}
-                          aria-label="Remove project"
-                        >
-                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                            <line x1="18" y1="6" x2="6" y2="18" />
-                            <line x1="6" y1="6" x2="18" y2="18" />
-                          </svg>
-                </button>
-                        <div className="project-icon">
-                          {project.isFolder !== false ? (
-                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-                            </svg>
-                          ) : (
-                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                              <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" />
-                              <polyline points="13 2 13 9 20 9" />
-                            </svg>
-                          )}
-                        </div>
-                        <div className="project-info">
-                          <div className="project-name">{project.name}</div>
-                          <div className="project-meta">
-                            {project.fileCount} file{project.fileCount !== 1 ? 's' : ''} • {formatDate(project.lastOpened)}
-                          </div>
-                        </div>
-                      </div>
-                      )
-                    })}
-                  </div>
-                </div>
-              ) : (
-                <div className="empty-state">
-                  <div className="empty-icon">
-                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                      <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-                    </svg>
-                  </div>
-                  <p className="empty-text">No recent projects</p>
-                  <p className="empty-hint">Open a project to get started</p>
-                </div>
-              )
-            ) : null}
             <div style={{ display: 'none' }}>
               <input
                 ref={folderInputRef}
@@ -707,6 +1300,126 @@ function FileUploader({ onProjectLoad }) {
               <line x1="12" y1="3" x2="12" y2="15" />
             </svg>
             <p>Drop your project folder here</p>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Confirmation Modal */}
+      {deleteModal.show && deleteModal.project && (
+        <div className="delete-modal-overlay" onClick={() => setDeleteModal({ show: false, project: null, isPermanent: false })}>
+          <div className="delete-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="delete-modal-header">
+              <h3>{deleteModal.isBulk ? `Delete ${deleteModal.projects?.length || 1} Projects` : 'Delete Project'}</h3>
+            </div>
+            <div className="delete-modal-body">
+              {deleteModal.isBulk ? (
+                <>
+                  <p>Are you sure you want to move <strong>{deleteModal.projects?.length || 0} project(s)</strong> to Recently Deleted?</p>
+                  <p className="delete-modal-info">You can restore them later from the Recently Deleted tab.</p>
+                </>
+              ) : (
+                <>
+                  <p>Are you sure you want to move <strong>"{deleteModal.project.name}"</strong> to Recently Deleted?</p>
+                  <p className="delete-modal-info">You can restore it later from the Recently Deleted tab.</p>
+                </>
+              )}
+            </div>
+            <div className="delete-modal-actions">
+              <button 
+                className="delete-modal-cancel"
+                onClick={() => setDeleteModal({ show: false, project: null, isPermanent: false })}
+              >
+                Cancel
+              </button>
+              <button 
+                className="delete-modal-confirm"
+                onClick={async () => {
+                  const projects = deleteModal.isBulk ? (deleteModal.projects || []) : [deleteModal.project]
+                  setDeleteModal({ show: false, project: null, isPermanent: false })
+                  
+                  // Pause automatic refreshes while deleting
+                  pauseRefreshRef.current = true
+                  
+                  try {
+                    const deletedProjectsToAdd = []
+                    
+                    for (const project of projects) {
+                      const projectId = project.projectId
+                      console.log('Moving project to Recently Deleted:', project.name, 'ID:', projectId)
+                      
+                      // Soft delete in Supabase (set deleted_at timestamp)
+                      try {
+                        await softDeleteProject(projectId, user.id)
+                        console.log('✅ Soft deleted project in Supabase:', projectId)
+                      } catch (error) {
+                        console.error('❌ Error soft deleting project in Supabase:', error)
+                        // Continue anyway - we'll still move it to Recently Deleted locally
+                      }
+                      
+                      // Soft delete - move to recently deleted
+                      const deletedProject = {
+                        ...project,
+                        deletedAt: Date.now()
+                      }
+                      deletedProjectsToAdd.push(deletedProject)
+                    }
+                    
+                    // Update state in a single batch
+                    // Always add projects to Recently Deleted, even if they have the same name or ID
+                    // We want to show ALL deletions, even if it's the same project deleted multiple times
+                    setRecentlyDeletedProjects(prev => {
+                      // Always add all projects as new entries, even if projectId already exists
+                      // This allows showing multiple deletions of the same project
+                      const updated = [...prev, ...deletedProjectsToAdd]
+                      
+                      // Immediately update localStorage to ensure it's synced
+                      localStorage.setItem('vibecanvas_recently_deleted_projects', JSON.stringify(updated))
+                      // Update ref to include all projectIds (even duplicates)
+                      recentlyDeletedIdsRef.current = new Set(updated.map(p => p.projectId))
+                      
+                      console.log('✅ Added', deletedProjectsToAdd.length, 'project(s) to Recently Deleted. Total in Recently Deleted:', updated.length)
+                      console.log('All projects in Recently Deleted:', updated.map((p, idx) => ({ 
+                        index: idx,
+                        name: p.name, 
+                        id: p.projectId, 
+                        deletedAt: new Date(p.deletedAt).toLocaleString() 
+                      })))
+                      
+                      return updated
+                    })
+                    
+                    // Remove from active projects (they should disappear from All Projects)
+                    const deletedIds = new Set(deletedProjectsToAdd.map(p => p.projectId))
+                    setAllProjects(prev => {
+                      const filtered = prev.filter(p => !deletedIds.has(p.projectId))
+                      console.log('Removed', prev.length - filtered.length, 'project(s) from All Projects')
+                      return filtered
+                    })
+                    
+                    // Remove from selected
+                    setSelectedProjects(prev => {
+                      const newSet = new Set(prev)
+                      deletedIds.forEach(id => newSet.delete(id))
+                      return newSet
+                    })
+                    
+                    console.log('✅ Moved', projects.length, 'project(s) to Recently Deleted')
+                    console.log('Projects moved:', deletedProjectsToAdd.map(p => ({ name: p.name, id: p.projectId })))
+                    
+                    // Resume automatic refreshes after a short delay
+                    setTimeout(() => {
+                      pauseRefreshRef.current = false
+                    }, 2000)
+                  } catch (error) {
+                    console.error('❌ Error moving projects to Recently Deleted:', error)
+                    alert(`Failed to delete project(s): ${error.message || 'Unknown error'}`)
+                    pauseRefreshRef.current = false
+                  }
+                }}
+              >
+                Move to Recently Deleted
+              </button>
+            </div>
           </div>
         </div>
       )}

@@ -168,3 +168,139 @@ textarea {
   box-sizing: border-box;
 }
 
+/* Save Prompt Modal */
+.save-prompt-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.75);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+  backdrop-filter: blur(4px);
+}
+
+.save-prompt-modal {
+  background: #1a1a1a;
+  border: 1px solid #262626;
+  border-radius: 12px;
+  width: 90%;
+  max-width: 480px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+
+.save-prompt-header {
+  padding: 1.5rem 1.5rem 1rem;
+  border-bottom: 1px solid #262626;
+}
+
+.save-prompt-header h3 {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: #e5e5e5;
+}
+
+.save-prompt-body {
+  padding: 1.5rem;
+}
+
+.save-prompt-body p {
+  margin: 0 0 0.75rem;
+  color: #a3a3a3;
+  font-size: 0.9375rem;
+  line-height: 1.5;
+}
+
+.save-prompt-body p:last-of-type {
+  margin-bottom: 0;
+}
+
+.save-prompt-body strong {
+  color: #e5e5e5;
+  font-weight: 600;
+}
+
+.save-prompt-info {
+  color: #4a9eff !important;
+  font-size: 0.875rem !important;
+  margin-top: 0.5rem !important;
+}
+
+.save-prompt-actions {
+  display: flex;
+  gap: 0.75rem;
+  padding: 1rem 1.5rem 1.5rem;
+  justify-content: flex-end;
+}
+
+.save-prompt-cancel,
+.save-prompt-confirm {
+  padding: 0.625rem 1.25rem;
+  border-radius: 6px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  border: none;
+}
+
+.save-prompt-cancel {
+  background: transparent;
+  color: #a3a3a3;
+  border: 1px solid #262626;
+}
+
+.save-prompt-cancel:hover {
+  background: #1a1a1a;
+  color: #e5e5e5;
+  border-color: #333333;
+}
+
+.save-prompt-confirm {
+  background: #4a9eff;
+  color: #ffffff;
+}
+
+.save-prompt-confirm:hover {
+  background: #3a8eef;
+}
+
+/* Full-page loading screen during auth initialization */
+.loading-screen {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: var(--background-color, #1a1a1a);
+  z-index: 9999;
+}
+
+.loading-screen p {
+  margin-top: 1.5rem;
+  color: #a3a3a3;
+  font-size: 0.9375rem;
+}
+
+.spinner {
+  width: 50px;
+  height: 50px;
+  border: 4px solid rgba(255, 255, 255, 0.1);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
