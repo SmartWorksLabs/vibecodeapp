@@ -278,6 +278,49 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
         .map(cssFile => {
           const contentLength = cssFile.content ? cssFile.content.length : 0
           console.log(`✅ Injecting CSS from ${cssFile.name} (${contentLength} chars)`)
+          
+          // Debug: Check if saved color is in CSS content
+          const cssContent = cssFile.content || ''
+          const savedColors = ['#004aeb', '#0854f7', '#004aeb', '#004AEB', '#0854F7']
+          const foundColors = savedColors.filter(color => cssContent.includes(color))
+          console.log('🔍 CSS CONTENT CHECK:', {
+            fileName: cssFile.name,
+            containsSavedColors: foundColors.length > 0 ? `Contains ${foundColors.join(', ')} ✓` : 'Does NOT contain saved colors ✗',
+            foundColors: foundColors,
+            contentPreview: cssContent.substring(0, 500)
+          })
+          
+          // Check for .section-title color rules - find ALL complete rule blocks
+          const allSectionTitleRules = cssContent.match(/\.section-title\s*\{[^}]+\}/g) || []
+          console.log('🔍 ALL .section-title rules in CSS:', allSectionTitleRules.length)
+          if (allSectionTitleRules.length > 0) {
+            allSectionTitleRules.forEach((rule, index) => {
+              const colorMatch = rule.match(/color\s*:\s*([^;!]+)/i)
+              const hasImportant = rule.includes('!important')
+              console.log(`🔍 Rule ${index + 1}:`, {
+                fullRule: rule,
+                color: colorMatch ? colorMatch[1].trim() : 'no color found',
+                hasImportant: hasImportant ? 'YES ✓' : 'NO ✗',
+                ruleLength: rule.length
+              })
+            })
+          }
+          
+          // Also check for color rules specifically
+          const sectionTitleColorMatches = cssContent.match(/\.section-title[^{]*\{[^}]*color[^}]*\}/gi) || []
+          console.log('🔍 .section-title rules WITH color property:', sectionTitleColorMatches.length)
+          if (sectionTitleColorMatches.length > 0) {
+            sectionTitleColorMatches.forEach((match, idx) => {
+              const colorMatch = match.match(/color\s*:\s*([^;!]+)/i)
+              const hasImportant = match.includes('!important')
+              console.log(`🔍 Color Rule ${idx + 1}:`, {
+                fullRule: match,
+                color: colorMatch ? colorMatch[1].trim() : 'no color found',
+                hasImportant: hasImportant ? 'YES ✓' : 'NO ✗'
+              })
+            })
+          }
+          
           const safeId = cssFile.name.replace(/[^a-zA-Z0-9]/g, '-')
           return `<style id="injected-${safeId}">${cssFile.content}</style>`
         })
@@ -566,17 +609,58 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
               textContent: element.textContent?.trim() || '',
               placeholder: element.placeholder || '', // Add placeholder support
               childTextElements: childTextElements, // Add this to the element info
-              styles: {
-                backgroundColor: computedStyle.backgroundColor,
-                color: computedStyle.color,
-                fontSize: computedStyle.fontSize,
-                padding: computedStyle.padding,
-                margin: computedStyle.margin,
-                border: computedStyle.border,
-                borderRadius: computedStyle.borderRadius,
-                width: computedStyle.width,
-                height: computedStyle.height,
-                display: computedStyle.display
+                styles: {
+                  // Prefer inline styles over computed styles for colors to preserve exact values
+                  // Use getPropertyValue to read styles set with setProperty (including !important)
+                  // For computed styles, convert RGB to hex to match what we saved
+                  backgroundColor: (() => {
+                    const inline = element.style.getPropertyValue('background-color') || element.style.backgroundColor;
+                    if (inline) return inline;
+                    const computed = computedStyle.backgroundColor;
+                    // Convert RGB to hex if needed
+                    if (computed && computed.startsWith('rgb')) {
+                      const match = computed.match(/\d+/g);
+                      if (match && match.length >= 3) {
+                        return '#' + match.slice(0, 3).map(x => {
+                          const hex = parseInt(x).toString(16);
+                          return hex.length === 1 ? '0' + hex : hex;
+                        }).join('');
+                      }
+                    }
+                    return computed;
+                  })(),
+                  color: (() => {
+                    const inline = element.style.getPropertyValue('color') || element.style.color;
+                    if (inline) {
+                      console.log('📖 Reading color from inline style:', inline);
+                      return inline;
+                    }
+                    const computed = computedStyle.color;
+                    console.log('📖 Reading color from computed style:', computed);
+                    // Convert RGB to hex if needed
+                    if (computed && computed.startsWith('rgb')) {
+                      const match = computed.match(/\d+/g);
+                      if (match && match.length >= 3) {
+                        const hex = '#' + match.slice(0, 3).map(x => {
+                          const hexVal = parseInt(x).toString(16);
+                          return hexVal.length === 1 ? '0' + hexVal : hexVal;
+                        }).join('');
+                        console.log('📖 Converted RGB to hex:', computed, '->', hex);
+                        return hex;
+                      }
+                    }
+                    console.log('📖 Returning computed color as-is:', computed);
+                    return computed;
+                  })(),
+                fontSize: element.style.fontSize || computedStyle.fontSize,
+                padding: element.style.padding || computedStyle.padding,
+                margin: element.style.margin || computedStyle.margin,
+                border: element.style.border || computedStyle.border,
+                borderRadius: element.style.borderRadius || computedStyle.borderRadius,
+                textAlign: element.style.textAlign || computedStyle.textAlign,
+                width: element.style.width || computedStyle.width,
+                height: element.style.height || computedStyle.height,
+                display: element.style.display || computedStyle.display
               },
               rect: {
                 x: rect.x,
@@ -1213,16 +1297,107 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
                   
                 } else {
                   // Convert property name to camelCase for inline styles
-                  const styleProperty = e.data.property.replace(/-([a-z])/g, (g) => g[1].toUpperCase());
+                  // Handle both camelCase (backgroundColor) and kebab-case (background-color)
+                  let styleProperty = e.data.property;
+                  if (styleProperty.includes('-')) {
+                    styleProperty = styleProperty.replace(/-([a-z])/g, (g) => g[1].toUpperCase());
+                  }
                   
-                  // Apply the style change
-                  targetElement.style[styleProperty] = e.data.value;
+                  // Apply the style change directly to inline style with !important to override CSS
+                  // Convert camelCase to kebab-case for CSS property names
+                  const cssPropertyName = styleProperty.replace(/([A-Z])/g, '-$1').toLowerCase();
+                  // Use setProperty with 'important' flag to ensure it overrides CSS rules
+                  targetElement.style.setProperty(cssPropertyName, e.data.value, 'important');
                   
-                  console.log('Style applied. Element now has:', {
-                    property: styleProperty,
-                    value: targetElement.style[styleProperty],
-                    computedStyle: window.getComputedStyle(targetElement)[styleProperty]
+                  // Verify the style was applied
+                  const appliedValue = targetElement.style.getPropertyValue(cssPropertyName);
+                  const computedValue = window.getComputedStyle(targetElement).getPropertyValue(cssPropertyName);
+                  
+                  // Convert computed RGB to hex for comparison if needed
+                  let computedHex = computedValue.trim();
+                  if (computedHex && computedHex.startsWith('rgb')) {
+                    const match = computedHex.match(/\d+/g);
+                    if (match && match.length >= 3) {
+                      const r = parseInt(match[0]);
+                      const g = parseInt(match[1]);
+                      const b = parseInt(match[2]);
+                      computedHex = '#' + [r, g, b].map(x => {
+                        const hex = x.toString(16);
+                        return hex.length === 1 ? '0' + hex : hex;
+                      }).join('');
+                    }
+                  }
+                  
+                  console.log('🎨 Style applied:', {
+                    property: cssPropertyName,
+                    sentValue: e.data.value,
+                    appliedInlineValue: appliedValue,
+                    computedValue: computedValue.trim(),
+                    computedHex: computedHex,
+                    elementTag: targetElement.tagName,
+                    elementClass: targetElement.className,
+                    matches: computedHex.toLowerCase() === e.data.value.toLowerCase()
                   });
+                  
+                  // Double-check: if computed value doesn't match (accounting for RGB vs hex conversion)
+                  const sentValueLower = e.data.value.toLowerCase();
+                  const computedHexLower = computedHex.toLowerCase();
+                  
+                  if (computedHexLower !== sentValueLower && e.data.value) {
+                    // Check if there's a CSS variable being used
+                    const allStyles = window.getComputedStyle(targetElement);
+                    const cssText = allStyles.cssText;
+                    const hasVariable = cssText.includes('var(') && cssText.includes(cssPropertyName);
+                    
+                    console.warn('⚠️ Computed value differs from sent value:', {
+                      sent: e.data.value,
+                      computed: computedValue.trim(),
+                      computedHex: computedHex,
+                      inline: appliedValue,
+                      property: cssPropertyName,
+                      hasCSSVariable: hasVariable,
+                      allComputedStyles: cssText.substring(0, 200)
+                    });
+                    
+                    // Force the style by removing any existing style and re-applying
+                    // This ensures it overrides any CSS variables or other rules
+                    targetElement.style.removeProperty(cssPropertyName);
+                    // Use requestAnimationFrame to ensure the removal is processed
+                    requestAnimationFrame(() => {
+                      targetElement.style.setProperty(cssPropertyName, e.data.value, 'important');
+                      
+                      // Force a reflow to ensure the style is applied
+                      void targetElement.offsetHeight;
+                      
+                      // Verify again
+                      const newComputedValue = window.getComputedStyle(targetElement).getPropertyValue(cssPropertyName);
+                      let newComputedHex = newComputedValue.trim();
+                      
+                      // Convert RGB to hex properly
+                      if (newComputedHex && newComputedHex.startsWith('rgb')) {
+                        const match = newComputedHex.match(/\d+/g);
+                        if (match && match.length >= 3) {
+                          const r = parseInt(match[0]);
+                          const g = parseInt(match[1]);
+                          const b = parseInt(match[2]);
+                          newComputedHex = '#' + [r, g, b].map(x => {
+                            const hex = x.toString(16);
+                            return hex.length === 1 ? '0' + hex : hex;
+                          }).join('');
+                        }
+                      }
+                      
+                      // Compare: RGB values are equivalent to hex, so we need to convert both for comparison
+                      const sentValueLower = e.data.value.toLowerCase();
+                      const computedHexLower = newComputedHex.toLowerCase();
+                      const matches = computedHexLower === sentValueLower;
+                      
+                      console.log('🔄 Retried setting style. New computed value:', newComputedValue.trim(), 'converted hex:', newComputedHex, 'sent:', sentValueLower, 'matches:', matches);
+                      
+                      // The style IS applied correctly (RGB matches hex), so this is just a comparison issue
+                      // The actual visual color should be correct
+                    });
+                  }
                   
                   // CRITICAL: Re-establish selection after style change
                   // Mark as selecting to prevent drift detection from interfering
@@ -1772,16 +1947,17 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
                 placeholder: element.placeholder || '', // Add placeholder support
                 childTextElements: childTextElements, // Add this to the element info
                 styles: {
-                  backgroundColor: computedStyle.backgroundColor,
-                  color: computedStyle.color,
-                  fontSize: computedStyle.fontSize,
-                  padding: computedStyle.padding,
-                  margin: computedStyle.margin,
-                  border: computedStyle.border,
-                  borderRadius: computedStyle.borderRadius,
-                  width: computedStyle.width,
-                  height: computedStyle.height,
-                  display: computedStyle.display
+                  // Prefer inline styles over computed styles for colors to preserve exact values
+                  backgroundColor: element.style.backgroundColor || computedStyle.backgroundColor,
+                  color: element.style.color || computedStyle.color,
+                  fontSize: element.style.fontSize || computedStyle.fontSize,
+                  padding: element.style.padding || computedStyle.padding,
+                  margin: element.style.margin || computedStyle.margin,
+                  border: element.style.border || computedStyle.border,
+                  borderRadius: element.style.borderRadius || computedStyle.borderRadius,
+                  width: element.style.width || computedStyle.width,
+                  height: element.style.height || computedStyle.height,
+                  display: element.style.display || computedStyle.display
                 },
                 rect: {
                   x: rect.x,

@@ -9,6 +9,11 @@ import { useAuth } from './contexts/AuthContext'
 import { saveProject, loadProject, saveProjectAsNew } from './services/projectService'
 import './App.css'
 
+// Helper function to convert camelCase to kebab-case for CSS properties
+const camelToKebab = (str) => {
+  return str.replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`)
+}
+
 function App() {
   console.log('App component rendering/re-rendering')
   const [projectFiles, setProjectFiles] = useState(null)
@@ -26,6 +31,9 @@ function App() {
   const [lineNumbers, setLineNumbers] = useState(true) // show line numbers in code editor
   const [tabSize, setTabSize] = useState(2) // tab size in code editor (2, 4, or 8)
   const [pendingTextChanges, setPendingTextChanges] = useState(() => new Map())
+  const [pendingCSSChanges, setPendingCSSChanges] = useState(() => new Map())
+  const pendingTextChangesRef = useRef(pendingTextChanges)
+  const pendingCSSChangesRef = useRef(pendingCSSChanges)
   const [isTextEditing, setIsTextEditing] = useState(false)
   const [saveStatus, setSaveStatus] = useState('saved') // 'saved', 'saving', 'unsaved'
   const [lastSaved, setLastSaved] = useState(null)
@@ -55,14 +63,14 @@ function App() {
     }
   }, [saveStatus, pendingTextChanges.size, user, authLoading])
 
-  // Apply pending text changes only on unmount (not on file changes)
-  // Store pendingTextChanges in a ref so cleanup can access the latest value
-  const pendingTextChangesRef = useRef(pendingTextChanges)
-  
-  // Keep ref in sync with state
+  // Keep refs in sync with state
   useEffect(() => {
     pendingTextChangesRef.current = pendingTextChanges
   }, [pendingTextChanges])
+  
+  useEffect(() => {
+    pendingCSSChangesRef.current = pendingCSSChanges
+  }, [pendingCSSChanges])
   
   useEffect(() => {
     return () => {
@@ -580,8 +588,8 @@ function App() {
     // Update preview immediately via postMessage (don't reload iframe)
     previewPaneRef.current.updateElementStyle(property, value);
 
-    // Also update CSS file for persistence (but don't trigger reload)
-    updateCSSFile(property, value);
+    // Store CSS change for later persistence (don't update file immediately to avoid reload)
+    storePendingCSSChange(property, value);
     console.log('=== END APP PROPERTY CHANGE DEBUG ===');
   }
 
@@ -848,7 +856,12 @@ function App() {
     }
     
     console.log('=== MANUAL SAVE TRIGGERED ===');
-    console.log('Pending changes count:', pendingTextChanges.size);
+    console.log('Pending text changes count:', pendingTextChangesRef.current.size);
+    console.log('Pending CSS changes count:', pendingCSSChangesRef.current.size);
+    // Log all pending CSS changes to see what we're about to save
+    pendingCSSChangesRef.current.forEach((change, key) => {
+      console.log('📋 Pending CSS change to save:', key, '->', change.property, '=', change.value, 'selector=', change.selector)
+    })
     // Clear any pending navigation and save prompt when saving manually
     setPendingNavigation(null)
     setShowSavePrompt(false)
@@ -864,7 +877,209 @@ function App() {
       // The UI already shows the changes (they're in the iframe), so we don't want to touch state
       let filesToSave = projectFiles
       
-      // Apply pending changes directly to the files array (don't update state - causes UI revert)
+      // Apply pending CSS changes first
+      // Use ref to get latest value (state might be stale in closure)
+      const latestPendingCSSChanges = pendingCSSChangesRef.current
+      if (latestPendingCSSChanges.size > 0) {
+        console.log('📦 Reading pendingCSSChanges from ref:', latestPendingCSSChanges.size, 'changes')
+        console.log('📦 ALL PENDING CSS CHANGES IN MAP:')
+        latestPendingCSSChanges.forEach((change, key) => {
+          console.log(`  [${key}]`, {
+            property: change.property,
+            value: change.value,
+            selector: change.selector,
+            fileName: change.fileName
+          })
+        })
+        
+        const cssFiles = filesToSave.filter(f => f.name.endsWith('.css'))
+        if (cssFiles.length > 0) {
+          // Group changes by file
+          const changesByFile = new Map()
+          latestPendingCSSChanges.forEach((change) => {
+            if (!changesByFile.has(change.fileName)) {
+              changesByFile.set(change.fileName, [])
+            }
+            changesByFile.get(change.fileName).push(change)
+          })
+
+          // Apply changes to each CSS file
+          filesToSave = filesToSave.map(file => {
+            const changes = changesByFile.get(file.name)
+            if (!changes || !file.name.endsWith('.css')) return file
+
+            let cssContent = file.content
+
+            // Group changes by selector
+            const changesBySelector = new Map()
+            changes.forEach(change => {
+              if (!changesBySelector.has(change.selector)) {
+                changesBySelector.set(change.selector, [])
+              }
+              changesBySelector.get(change.selector).push(change)
+            })
+
+            // Apply all changes for each selector
+            changesBySelector.forEach((selectorChanges, selector) => {
+              // Convert property names to CSS properties (camelCase to kebab-case)
+              const cssProperties = selectorChanges.map(change => {
+                // Convert camelCase to kebab-case for all CSS properties
+                const cssProperty = camelToKebab(change.property)
+                return { property: cssProperty, value: change.value }
+              })
+
+              // Check if selector already exists in CSS
+              // Escape special regex characters but handle multiple classes properly
+              const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+              // Match selector with optional whitespace before the opening brace
+              const selectorRegex = new RegExp(`(${escapedSelector})\\s*\\{[^}]*\\}`, 'g')
+              const existingRule = cssContent.match(selectorRegex)
+              
+              console.log('🟢 CSS Save Debug (Manual Save):', {
+                selector: selector,
+                escapedSelector: escapedSelector,
+                existingRule: existingRule ? existingRule[0].substring(0, 200) : null,
+                properties: cssProperties.map(p => `${p.property}: ${p.value}`),
+                exactValues: cssProperties.map(p => p.value)
+              })
+              console.log('🟢 CSS Save Debug - EXACT VALUES BEING WRITTEN:', cssProperties.map(p => `${p.property}="${p.value}"`).join(', '))
+              
+              // Special logging for color properties
+              const colorProps = cssProperties.filter(p => p.property === 'color' || p.property === 'background-color')
+              if (colorProps.length > 0) {
+                console.log('🎨 COLOR PROPERTIES BEING SAVED TO CSS:', colorProps.map(p => `${p.property}="${p.value}"`).join(', '))
+              }
+
+              if (existingRule) {
+                // Update existing rule - only replace the first match
+                const beforeUpdate = cssContent.substring(0, 500)
+                const firstMatch = existingRule[0]
+                const updatedRule = firstMatch.replace(
+                  /(\{[^}]*)/,
+                  (match) => {
+                    let updated = match
+                    // Remove existing properties if they exist (case-insensitive to catch variations)
+                    cssProperties.forEach(({ property, value }) => {
+                      const escapedProp = property.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+                      // Match property name case-insensitively, but preserve the exact value we're setting
+                      const propRegex = new RegExp(`${escapedProp}\\s*:\\s*[^;]+;?`, 'gi')
+                      updated = updated.replace(propRegex, '')
+                    })
+              // Add new properties with EXACT values (preserve user's exact input)
+              // Use !important to ensure our rules override existing ones
+              cssProperties.forEach(({ property, value }) => {
+                updated += `\n  ${property}: ${value} !important;`
+              })
+                    return updated
+                  }
+                )
+                // Replace only the first occurrence by removing the global flag temporarily
+                const nonGlobalRegex = new RegExp(`(${escapedSelector})\\s*\\{[^}]*\\}`, '')
+                cssContent = cssContent.replace(nonGlobalRegex, updatedRule)
+                
+                // Check for duplicate rules and remove them, keeping only the updated one (which has all properties)
+                const duplicateRuleRegex = new RegExp(`${escapedSelector}\\s*\\{[^}]*\\}`, 'g')
+                const duplicateMatches = cssContent.match(duplicateRuleRegex)
+                
+                if (duplicateMatches && duplicateMatches.length > 1) {
+                  console.log(`⚠️ Found ${duplicateMatches.length} duplicate rules for ${selector}`)
+                  console.log('⚠️ Duplicate rules found:', duplicateMatches.map((r, i) => `Rule ${i + 1}: ${r.substring(0, 200)}`))
+                  
+                  // The updatedRule already contains all properties from the original rule plus our changes
+                  // Remove ALL occurrences (including the one we just updated)
+                  cssContent = cssContent.replace(duplicateRuleRegex, '')
+                  
+                  // Add back ONLY the updated rule (which preserves all original properties + our color change)
+                  cssContent += updatedRule
+                  
+                  console.log('✅ Removed duplicates and kept updated rule with all properties:', updatedRule.substring(0, 200))
+                }
+                
+                const afterUpdate = cssContent.substring(0, 500)
+                console.log('🟡 Updated CSS rule:', {
+                  selector: selector,
+                  before: beforeUpdate,
+                  after: afterUpdate,
+                  updatedRule: updatedRule.substring(0, 200)
+                })
+                console.log('🟡 Updated CSS rule - EXACT VALUES:', cssProperties.map(p => `${p.property}="${p.value}"`).join(', '))
+                console.log('🟡 Full updated rule:', updatedRule)
+                
+                // Debug: Check for conflicting color rules after update
+                const colorProps = cssProperties.filter(p => p.property === 'color')
+                if (colorProps.length > 0) {
+                  const savedColor = colorProps[0].value
+                  console.log('🔍 Searching for conflicting color rules after CSS update...')
+                  
+                  // Check for the old color value (rgb(17, 24, 39) = #111827)
+                  const oldColorPatterns = [
+                    '#111827',
+                    'rgb(17, 24, 39)',
+                    'rgb(17,24,39)'
+                  ]
+                  const allConflictingRules = []
+                  oldColorPatterns.forEach(oldColor => {
+                    const regex = new RegExp(`${escapedSelector.replace(/\\/g, '\\\\')}[^{]*\\{[^}]*color\\s*:\\s*${oldColor.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[^}]*\\}`, 'gi')
+                    const matches = cssContent.match(regex)
+                    if (matches) {
+                      allConflictingRules.push(...matches)
+                    }
+                  })
+                  
+                  // Also check for all .section-title color rules - find ALL complete rule blocks
+                  const allSectionTitleCompleteRules = cssContent.match(/\.section-title\s*\{[^}]+\}/g) || []
+                  const allSectionTitleColorRules = cssContent.match(/\.section-title[^{]*\{[^}]*color[^}]*\}/gi) || []
+                  
+                  // Extract actual color values from the rules
+                  const colorValuesInRules = allSectionTitleColorRules.map(rule => {
+                    const colorMatch = rule.match(/color\s*:\s*([^;!]+)/i)
+                    const hasImportant = rule.includes('!important')
+                    return {
+                      color: colorMatch ? colorMatch[1].trim() : null,
+                      hasImportant: hasImportant,
+                      fullRule: rule
+                    }
+                  }).filter(r => r.color)
+                  
+                  console.log('🔍 CSS Debug After Update:', {
+                    selector: selector,
+                    savedColor: savedColor,
+                    savedColorInCSS: cssContent.includes(savedColor) ? 'YES ✓' : 'NO ✗',
+                    importantInRule: updatedRule.includes('!important') ? 'YES ✓' : 'NO ✗',
+                    conflictingRulesCount: allConflictingRules.length,
+                    conflictingRules: allConflictingRules.map(r => r),
+                    allSectionTitleCompleteRules: allSectionTitleCompleteRules.length,
+                    allSectionTitleCompleteRulesFull: allSectionTitleCompleteRules,
+                    allSectionTitleColorRules: allSectionTitleColorRules.length,
+                    colorValuesFound: colorValuesInRules,
+                    cssPreview: cssContent.includes(selector) ? cssContent.substring(cssContent.indexOf(selector), cssContent.indexOf(selector) + 500) : 'Selector not found in CSS'
+                  })
+                }
+              } else {
+                // Add new rule with EXACT values
+                // Use !important to ensure our rules override existing ones
+                const properties = cssProperties.map(({ property, value }) => `  ${property}: ${value} !important;`).join('\n')
+                const newRule = `\n${selector} {\n${properties}\n}\n`
+                cssContent += newRule
+                console.log('🟢 Added new CSS rule:', {
+                  selector: selector,
+                  rule: newRule,
+                  values: cssProperties.map(p => p.value)
+                })
+                console.log('🟢 Added new CSS rule - EXACT VALUES:', cssProperties.map(p => `${p.property}="${p.value}"`).join(', '))
+                console.log('🟢 Full new rule:', newRule)
+              }
+            })
+
+            return {
+              ...file,
+              content: cssContent
+            }
+          })
+        }
+      }
+      
+      // Apply pending text changes directly to the files array (don't update state - causes UI revert)
       if (pendingTextChanges.size > 0) {
         filesToSave = projectFiles.map(file => {
           // Check if this file has pending changes
@@ -933,7 +1148,7 @@ function App() {
       
       // Save to All Projects (Supabase) - always save, even if no pending changes
       // Store whether we had pending changes BEFORE clearing them
-      const hadPendingChanges = pendingTextChanges.size > 0
+      const hadPendingChanges = pendingTextChanges.size > 0 || pendingCSSChanges.size > 0
       
       if (currentProjectName && filesToSave) {
         console.log('=== SAVING TO ALL PROJECTS ===')
@@ -953,15 +1168,50 @@ function App() {
               content: file.isImage && file.dataUrl ? file.dataUrl : file.content,
               type: file.type || file.name.split('.').pop(),
             }))
+            
+            // Log CSS file content before saving to verify colors are correct
+            const cssFileToSave = filesForCloud.find(f => f.name.endsWith('.css'))
+            if (cssFileToSave) {
+              const colorRules = cssFileToSave.content.match(/(background-color|color)\s*:\s*[^;]+/gi) || []
+              
+              // Check for saved colors in the CSS file being saved
+              const savedColors = ['#004aeb', '#0854f7', '#004AEB', '#0854F7']
+              const foundSavedColors = savedColors.filter(color => cssFileToSave.content.includes(color))
+              
+              // Check for .section-title color rules
+              const sectionTitleColorRules = cssFileToSave.content.match(/\.section-title[^{]*\{[^}]*color[^}]*\}/gi) || []
+              const sectionTitleColorValues = sectionTitleColorRules.map(rule => {
+                const colorMatch = rule.match(/color\s*:\s*([^;!]+)/i)
+                return colorMatch ? colorMatch[1].trim() : null
+              }).filter(Boolean)
+              
+              console.log('💾 Saving CSS file to Supabase:', {
+                fileName: cssFileToSave.name,
+                contentLength: cssFileToSave.content.length,
+                colorRules: colorRules.slice(-10), // Last 10 color rules
+                savedColorsFound: foundSavedColors.length > 0 ? `Contains ${foundSavedColors.join(', ')} ✓` : 'No saved colors found ✗',
+                sectionTitleColorRules: sectionTitleColorRules.length,
+                sectionTitleColorValues: sectionTitleColorValues,
+                cssPreview: cssFileToSave.content.includes('.section-title') 
+                  ? cssFileToSave.content.substring(
+                      Math.max(0, cssFileToSave.content.indexOf('.section-title') - 50),
+                      cssFileToSave.content.indexOf('.section-title') + 500
+                    )
+                  : '.section-title not found'
+              })
+            }
+            
             const result = await updateProject(currentProjectName, filesForCloud, user.id)
             console.log('✅ Project updated in All Projects successfully')
             
-            // DON'T update projectFiles state - it causes PreviewPane to reload and revert UI
-            // The UI already shows the changes (they're in the iframe)
-            // State will update naturally when user makes next change via updateHTMLFile
+            // Update projectFiles state with the saved files to keep state in sync with what was saved
+            // This ensures that when the project is reloaded, the state reflects the saved changes
+            // We do this AFTER save is successful to avoid reverting the UI
+            setProjectFiles(filesToSave)
             
             // Clear pending changes
             setPendingTextChanges(new Map());
+            setPendingCSSChanges(new Map());
             
             // Clear text editing state after save
             setIsTextEditing(false);
@@ -987,12 +1237,13 @@ function App() {
           // This will create a new project and set hasBeenSavedToAllProjects to true
           const result = await saveProjectToAllProjects(filesToSave, currentProjectName, false)
           if (result.success) {
-            // DON'T update projectFiles state - it causes PreviewPane to reload and revert UI
-            // The UI already shows the changes (they're in the iframe)
-            // State will update naturally when user makes next change via updateHTMLFile
+            // Update projectFiles state with the saved files to keep state in sync with what was saved
+            // This ensures that when the project is reloaded, the state reflects the saved changes
+            setProjectFiles(filesToSave)
             
             // Clear pending changes
             setPendingTextChanges(new Map());
+            setPendingCSSChanges(new Map());
             
             // Clear text editing state after save
             setIsTextEditing(false);
@@ -1071,58 +1322,319 @@ function App() {
     console.log('=== PENDING TEXT CHANGES APPLIED ===');
   }
 
-  const updateCSSFile = (property, value) => {
-    if (!selectedElement) return
+  // Normalize color value to hex format
+  const normalizeColorToHex = (color) => {
+    if (!color) return color
+    
+    // If already hex, return as is
+    if (typeof color === 'string' && color.startsWith('#')) {
+      return color.toLowerCase()
+    }
+    
+    // If RGB/RGBA, convert to hex
+    if (typeof color === 'string' && color.startsWith('rgb')) {
+      const match = color.match(/\d+/g)
+      if (match && match.length >= 3) {
+        const r = parseInt(match[0])
+        const g = parseInt(match[1])
+        const b = parseInt(match[2])
+        const hex = '#' + [r, g, b].map(x => {
+          const hex = x.toString(16)
+          return hex.length === 1 ? '0' + hex : hex
+        }).join('')
+        return hex.toLowerCase()
+      }
+    }
+    
+    // Return as is if can't convert
+    return color
+  }
+
+  // Store CSS changes for later persistence (similar to pendingTextChanges)
+  const storePendingCSSChange = (property, value) => {
+    if (!selectedElement) {
+      console.warn('storePendingCSSChange: No selectedElement')
+      return
+    }
 
     const cssFiles = projectFiles.filter(f => f.name.endsWith('.css'))
-    if (cssFiles.length === 0) return
+    if (cssFiles.length === 0) {
+      console.warn('storePendingCSSChange: No CSS files found')
+      return
+    }
 
-    // Use the first CSS file (or could be smarter about which one to use)
+    // Use the first CSS file
     const cssFile = cssFiles[0]
-    let cssContent = cssFile.content
 
-    // Build selector
+    // Build selector - use the most specific selector available
     let selector = ''
     if (selectedElement.id) {
       selector = `#${selectedElement.id}`
     } else if (selectedElement.className) {
-      const firstClass = selectedElement.className.split(' ')[0]
-      selector = `.${firstClass}`
+      // Use the full className, not just the first class
+      const className = typeof selectedElement.className === 'string' 
+        ? selectedElement.className 
+        : (selectedElement.className.baseVal || '')
+      const classes = className.split(' ').filter(c => c.trim().length > 0)
+      if (classes.length > 0) {
+        // Use all classes for more specificity
+        selector = '.' + classes.join('.')
+      } else {
+        selector = selectedElement.tagName.toLowerCase()
+      }
     } else {
       selector = selectedElement.tagName.toLowerCase()
     }
 
-    // Convert property name to CSS property
-    const cssProperty = property === 'borderRadius' ? 'border-radius' :
-                        property === 'fontSize' ? 'font-size' :
-                        property === 'backgroundColor' ? 'background-color' :
-                        property
-
-    // Check if selector already exists in CSS
-    const selectorRegex = new RegExp(`(${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})\\s*\\{[^}]*\\}`, 'g')
-    const existingRule = cssContent.match(selectorRegex)
-
-    if (existingRule) {
-      // Update existing rule
-      const updatedRule = existingRule[0].replace(
-        /(\{[^}]*)/,
-        (match) => {
-          // Remove existing property if it exists
-          const propRegex = new RegExp(`${cssProperty.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*:[^;]+;?`, 'g')
-          let updated = match.replace(propRegex, '')
-          // Add new property
-          updated += `\n  ${cssProperty}: ${value};`
-          return updated
+    // PRESERVE EXACT USER VALUE - don't normalize user input
+    // The color picker always returns hex values like #f00000
+    // We want to save exactly what the user sets
+    let finalValue = value
+    
+    // Normalize fontSize - ensure it has a unit
+    if (property === 'fontSize') {
+      if (typeof value === 'string' && value.trim() !== '') {
+        const trimmedValue = value.trim();
+        // Check if value already has a unit (px, rem, em, %, etc.)
+        const hasUnit = /px|rem|em|%|pt|ex|ch|vw|vh|vmin|vmax/i.test(trimmedValue);
+        if (!hasUnit && /^\d+\.?\d*$/.test(trimmedValue)) {
+          // If it's just a number without a unit, add 'px'
+          finalValue = `${trimmedValue}px`;
+          console.log('🔧 Added missing unit to fontSize:', value, '->', finalValue);
+        } else {
+          finalValue = trimmedValue;
         }
-      )
-      cssContent = cssContent.replace(selectorRegex, updatedRule)
-    } else {
-      // Add new rule
-      const newRule = `\n${selector} {\n  ${cssProperty}: ${value};\n}\n`
-      cssContent += newRule
+      } else if (!value || value === '') {
+        // Default fallback if empty
+        finalValue = '16px';
+        console.log('🔧 Using default fontSize:', finalValue);
+      }
+    }
+    
+    // Only normalize if it's clearly not hex (e.g., RGB from computed styles)
+    if (property === 'backgroundColor' || property === 'color' || property === 'borderColor') {
+      if (typeof value === 'string' && value.startsWith('rgb')) {
+        // Only normalize RGB values, preserve hex exactly as user set it
+        finalValue = normalizeColorToHex(value)
+        console.log('Normalized RGB to hex:', value, '->', finalValue)
+      } else if (typeof value === 'string') {
+        // Ensure hex values have # prefix if missing
+        if (value && !value.startsWith('#') && /^[0-9A-Fa-f]{6}$/i.test(value)) {
+          finalValue = '#' + value
+          console.log('Added # prefix to hex:', value, '->', finalValue)
+        } else if (value.startsWith('#')) {
+          // Preserve hex value exactly as user set it (keep original case)
+          finalValue = value
+          console.log('Preserving exact hex value:', finalValue)
+        } else {
+          finalValue = value
+        }
+      }
     }
 
-    handleFileUpdate(cssFile.name, cssContent)
+    // Create a unique key for this CSS change
+    const changeKey = `${cssFile.name}_${selector}_${property}`
+
+    console.log('🔵 Storing CSS change:', {
+      property: property,
+      originalValue: value,
+      finalValue: finalValue,
+      selector: selector,
+      changeKey: changeKey,
+      elementTag: selectedElement.tagName,
+      elementId: selectedElement.id,
+      elementClassName: selectedElement.className
+    })
+    console.log('🔵 Storing CSS change - VALUES:', `property="${property}"`, `value="${finalValue}"`, `selector="${selector}"`)
+    
+    // Special logging for color properties to debug persistence issues
+    if (property === 'color' || property === 'backgroundColor') {
+      console.log(`🎨 COLOR CHANGE STORED: ${property} = "${finalValue}" for selector "${selector}"`)
+    }
+    
+    // Special logging for fontSize to ensure units are present
+    if (property === 'fontSize') {
+      console.log(`📏 FONT SIZE CHANGE STORED: ${property} = "${finalValue}" for selector "${selector}"`)
+    }
+
+    // Store the change with exact value
+    setPendingCSSChanges(prev => {
+      const newMap = new Map(prev)
+      // Check if we're overwriting an existing change
+      if (prev.has(changeKey)) {
+        const oldChange = prev.get(changeKey)
+        console.log('⚠️ OVERWRITING existing CSS change:', {
+          key: changeKey,
+          oldValue: oldChange.value,
+          newValue: finalValue,
+          property: property,
+          selector: selector
+        })
+      }
+      newMap.set(changeKey, {
+        fileName: cssFile.name,
+        selector: selector,
+        property: property,
+        value: finalValue,
+        element: selectedElement
+      })
+      console.log('✅ CSS change stored in Map. Total pending:', newMap.size)
+      return newMap
+    })
+
+    // Set unsaved status when changes are made
+    setSaveStatus('unsaved')
+  }
+
+  // Apply pending CSS changes to files (called on manual save)
+  const applyPendingCSSChanges = (persistToFiles = true) => {
+    if (pendingCSSChanges.size === 0) return
+
+    const cssFiles = projectFiles.filter(f => f.name.endsWith('.css'))
+    if (cssFiles.length === 0) return
+
+    // Group changes by file
+    const changesByFile = new Map()
+    pendingCSSChanges.forEach((change, key) => {
+      if (!changesByFile.has(change.fileName)) {
+        changesByFile.set(change.fileName, [])
+      }
+      changesByFile.get(change.fileName).push(change)
+    })
+
+    // Apply changes to each CSS file
+    changesByFile.forEach((changes, fileName) => {
+      const cssFile = cssFiles.find(f => f.name === fileName)
+      if (!cssFile) return
+
+      let cssContent = cssFile.content
+
+      // Group changes by selector
+      const changesBySelector = new Map()
+      changes.forEach(change => {
+        if (!changesBySelector.has(change.selector)) {
+          changesBySelector.set(change.selector, [])
+        }
+        changesBySelector.get(change.selector).push(change)
+      })
+
+      // Apply all changes for each selector
+      changesBySelector.forEach((selectorChanges, selector) => {
+        // Convert property names to CSS properties (camelCase to kebab-case)
+        const cssProperties = selectorChanges.map(change => {
+          // Convert camelCase to kebab-case for all CSS properties
+          const cssProperty = camelToKebab(change.property)
+          return { property: cssProperty, value: change.value }
+        })
+
+        // Check if selector already exists in CSS
+        const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+        const selectorRegex = new RegExp(`(${escapedSelector})\\s*\\{[^}]*\\}`, 'g')
+        const existingRule = cssContent.match(selectorRegex)
+
+        console.log('🟢 CSS Save Debug (applyPendingCSSChanges):', {
+          selector: selector,
+          escapedSelector: escapedSelector,
+          existingRule: existingRule ? existingRule[0].substring(0, 200) : null,
+          properties: cssProperties.map(p => `${p.property}: ${p.value}`),
+          exactValues: cssProperties.map(p => p.value)
+        })
+        console.log('🟢 CSS Save Debug - EXACT VALUES BEING WRITTEN (applyPendingCSSChanges):', cssProperties.map(p => `${p.property}="${p.value}"`).join(', '))
+
+        if (existingRule) {
+          // Update existing rule - only replace the first match
+          const beforeUpdate = cssContent.substring(0, 500)
+          const firstMatch = existingRule[0]
+          const updatedRule = firstMatch.replace(
+            /(\{[^}]*)/,
+            (match) => {
+              let updated = match
+              // Remove existing properties if they exist (case-insensitive)
+              cssProperties.forEach(({ property, value }) => {
+                const escapedProp = property.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+                const propRegex = new RegExp(`${escapedProp}\\s*:\\s*[^;]+;?`, 'gi')
+                updated = updated.replace(propRegex, '')
+              })
+              // Add new properties with EXACT values (preserve user's exact input)
+              // Use !important to ensure our rules override existing ones
+              cssProperties.forEach(({ property, value }) => {
+                updated += `\n  ${property}: ${value} !important;`
+              })
+              return updated
+            }
+          )
+          // Replace only the first occurrence by removing the global flag temporarily
+          const nonGlobalRegex = new RegExp(`(${escapedSelector})\\s*\\{[^}]*\\}`, '')
+          cssContent = cssContent.replace(nonGlobalRegex, updatedRule)
+          
+          // Check for duplicate rules and remove them, keeping only the updated one (which has all properties)
+          const duplicateRuleRegex = new RegExp(`${escapedSelector}\\s*\\{[^}]*\\}`, 'g')
+          const duplicateMatches = cssContent.match(duplicateRuleRegex)
+          
+          if (duplicateMatches && duplicateMatches.length > 1) {
+            console.log(`⚠️ Found ${duplicateMatches.length} duplicate rules for ${selector} (applyPendingCSSChanges)`)
+            console.log('⚠️ Duplicate rules found:', duplicateMatches.map((r, i) => `Rule ${i + 1}: ${r.substring(0, 200)}`))
+            
+            // The updatedRule already contains all properties from the original rule plus our changes
+            // Remove ALL occurrences (including the one we just updated)
+            cssContent = cssContent.replace(duplicateRuleRegex, '')
+            
+            // Add back ONLY the updated rule (which preserves all original properties + our color change)
+            cssContent += updatedRule
+            
+            console.log('✅ Removed duplicates and kept updated rule with all properties (applyPendingCSSChanges):', updatedRule.substring(0, 200))
+          }
+          
+          const afterUpdate = cssContent.substring(0, 500)
+          console.log('🟡 Updated CSS rule (applyPendingCSSChanges):', {
+            selector: selector,
+            before: beforeUpdate,
+            after: afterUpdate,
+            updatedRule: updatedRule.substring(0, 200),
+            values: cssProperties.map(p => p.value)
+          })
+          console.log('🟡 Updated CSS rule - EXACT VALUES (applyPendingCSSChanges):', cssProperties.map(p => `${p.property}="${p.value}"`).join(', '))
+          console.log('🟡 Full updated rule (applyPendingCSSChanges):', updatedRule)
+        } else {
+          // Add new rule with EXACT values
+          // Use !important to ensure our rules override existing ones
+          const properties = cssProperties.map(({ property, value }) => `  ${property}: ${value} !important;`).join('\n')
+          const newRule = `\n${selector} {\n${properties}\n}\n`
+          cssContent += newRule
+          console.log('🟢 Added new CSS rule (applyPendingCSSChanges):', {
+            selector: selector,
+            rule: newRule,
+            values: cssProperties.map(p => p.value)
+          })
+          console.log('🟢 Added new CSS rule - EXACT VALUES (applyPendingCSSChanges):', cssProperties.map(p => `${p.property}="${p.value}"`).join(', '))
+          console.log('🟢 Full new rule (applyPendingCSSChanges):', newRule)
+        }
+        })
+
+      if (persistToFiles) {
+        // Log the final CSS content to verify it contains our changes
+        const colorMatches = cssContent.match(/background-color\s*:\s*[^;]+/gi) || []
+        const textColorMatches = cssContent.match(/color\s*:\s*[^;]+/gi) || []
+        console.log('📝 Final CSS content - Color rules found:', {
+          backgroundColors: colorMatches.slice(-5), // Last 5 matches
+          textColors: textColorMatches.slice(-5), // Last 5 matches
+          contentLength: cssContent.length
+        })
+        
+        // Also check for our specific selector
+        const selectorMatches = cssContent.match(new RegExp(`${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[^}]*{[^}]*}`, 'gi'))
+        if (selectorMatches) {
+          console.log('📝 CSS content for selector:', selector, selectorMatches[selectorMatches.length - 1])
+        }
+        
+        handleFileUpdate(fileName, cssContent)
+      }
+    })
+
+    // Clear pending changes after applying
+    if (persistToFiles) {
+      setPendingCSSChanges(new Map())
+    }
   }
 
   const handleFileSelect = (file) => {
@@ -1342,6 +1854,7 @@ function App() {
     setSelectedElement(null)
     setCurrentProjectName(null)
     setPendingTextChanges(new Map())
+    setPendingCSSChanges(new Map())
     setSaveStatus('saved')
     setLastSaved(null)
     setIsTextEditing(false)
@@ -1551,13 +2064,6 @@ function App() {
             gridOverlay={gridOverlay}
             onGridOverlayChange={handleGridOverlayChange}
             projectName={currentProjectName}
-            onProjectNameChange={(newName) => {
-              setCurrentProjectName(newName)
-              // If project was already saved, mark as unsaved since name changed
-              if (hasBeenSavedToAllProjects) {
-                setHasBeenSavedToAllProjects(false)
-              }
-            }}
           />
         <div className="app-layout">
           <div className="preview-section">

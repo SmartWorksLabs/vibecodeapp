@@ -515,3 +515,65 @@ export const deleteProject = async (projectId, userId) => {
   }
 }
 
+/**
+ * Rename a project
+ */
+export const renameProject = async (projectId, newName, userId) => {
+  try {
+    console.log('✏️ Renaming project:', projectId, 'to:', newName, 'user:', userId)
+    
+    // Verify the project belongs to the user
+    const { data: project, error: verifyError } = await supabase
+      .from('projects')
+      .select('id, user_id, name')
+      .eq('id', projectId)
+      .eq('user_id', userId)
+      .single()
+
+    if (verifyError || !project) {
+      console.error('❌ Project verification failed:', verifyError)
+      throw new Error('Project not found or access denied')
+    }
+
+    // Check if new name already exists (excluding the current project)
+    const { data: existingProject, error: checkError } = await supabase
+      .from('projects')
+      .select('id')
+      .eq('name', newName)
+      .eq('user_id', userId)
+      .neq('id', projectId)
+      .is('deleted_at', null) // Only check active projects
+      .maybeSingle()
+
+    if (checkError) {
+      console.error('❌ Error checking for duplicate name:', checkError)
+      throw checkError
+    }
+
+    if (existingProject) {
+      throw new Error('A project with this name already exists')
+    }
+
+    // Update the project name
+    const { error: updateError } = await supabase
+      .from('projects')
+      .update({ 
+        name: newName,
+        updated_at: new Date().toISOString() 
+      })
+      .eq('id', projectId)
+      .eq('user_id', userId)
+
+    if (updateError) {
+      console.error('❌ Error renaming project:', updateError)
+      throw updateError
+    }
+
+    console.log('✅ Project renamed successfully:', projectId, 'from', project.name, 'to', newName)
+    return { success: true }
+  } catch (error) {
+    console.error('❌ Error renaming project:', error)
+    throw error
+  }
+}
+

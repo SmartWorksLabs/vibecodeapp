@@ -1,6 +1,6 @@
 import { useRef, useState, useEffect, useMemo, Fragment } from 'react'
 import { useAuth } from '../contexts/AuthContext'
-import { listProjects, loadProject, loadProjectById, deleteProject, softDeleteProject, restoreProject } from '../services/projectService'
+import { listProjects, loadProject, loadProjectById, deleteProject, softDeleteProject, restoreProject, renameProject } from '../services/projectService'
 import AuthModal from './AuthModal'
 import './FileUploader.css'
 
@@ -132,6 +132,9 @@ function FileUploader({ onProjectLoad }) {
   const [selectedProjects, setSelectedProjects] = useState(new Set())
   const [showFilesInfo, setShowFilesInfo] = useState(false)
   const [tooltipPosition, setTooltipPosition] = useState({ top: 0, right: 0 })
+  const [editingProjectId, setEditingProjectId] = useState(null)
+  const [editingProjectName, setEditingProjectName] = useState('')
+  const editingInputRef = useRef(null)
   const folderInputRef = useRef(null)
   const fileInputRef = useRef(null)
   const openFilesButtonRef = useRef(null)
@@ -546,6 +549,118 @@ function FileUploader({ onProjectLoad }) {
     }
   }
   
+  // Handle project name editing
+  const handleStartEditing = (projectId, currentName) => {
+    setEditingProjectId(projectId)
+    setEditingProjectName(currentName)
+  }
+
+  const handleCancelEditing = () => {
+    setEditingProjectId(null)
+    setEditingProjectName('')
+  }
+
+  const handleSaveProjectName = async (projectId, newName) => {
+    if (!user) {
+      alert('Please sign in to rename projects')
+      handleCancelEditing()
+      return
+    }
+
+    const trimmedName = newName.trim()
+    if (!trimmedName) {
+      alert('Project name cannot be empty')
+      return
+    }
+
+    // Find the current project to get its current name
+    const currentProject = displayProjects.find(p => p.projectId === projectId)
+    if (!currentProject) {
+      handleCancelEditing()
+      return
+    }
+
+    if (trimmedName === currentProject.name) {
+      // No change, just cancel editing
+      handleCancelEditing()
+      return
+    }
+
+    try {
+      await renameProject(projectId, trimmedName, user.id)
+      console.log('✅ Project renamed successfully:', projectId, 'to', trimmedName)
+      
+      // Reload projects to show the updated name
+      await loadAllProjects()
+      
+      handleCancelEditing()
+    } catch (error) {
+      console.error('❌ Error renaming project:', error)
+      alert(`Failed to rename project: ${error.message || 'Unknown error'}`)
+    }
+  }
+
+  // Focus input when editing starts
+  useEffect(() => {
+    if (editingProjectId && editingInputRef.current) {
+      editingInputRef.current.focus()
+      editingInputRef.current.select()
+    }
+  }, [editingProjectId])
+
+  // Handle Delete key press for selected projects
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      // Don't handle delete if user is editing a project name or typing in an input
+      if (editingProjectId || e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
+        return
+      }
+
+      // Handle Delete or Backspace key
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedProjects.size > 0) {
+        e.preventDefault()
+        
+        if (!user) {
+          alert('Please sign in to delete projects')
+          return
+        }
+
+        // Get selected projects
+        const selectedArray = Array.from(selectedProjects)
+        const selectedProjectsArray = displayProjects
+          .filter(p => selectedArray.includes(p.projectId))
+          .filter(Boolean)
+
+        if (selectedProjectsArray.length === 0) {
+          return
+        }
+
+        // Show delete confirmation modal
+        if (selectedProjectsArray.length === 1) {
+          setDeleteModal({ 
+            show: true, 
+            project: selectedProjectsArray[0], 
+            isPermanent: activeTab === 'deleted',
+            isBulk: false 
+          })
+        } else {
+          setDeleteModal({ 
+            show: true, 
+            project: selectedProjectsArray[0], 
+            isPermanent: activeTab === 'deleted',
+            isBulk: true, 
+            projects: selectedProjectsArray 
+          })
+        }
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [selectedProjects, user, activeTab, editingProjectId, displayProjects])
+
   // Permanently delete a project
   const handlePermanentDelete = async (projectId) => {
     if (!user) {
@@ -1423,42 +1538,6 @@ function FileUploader({ onProjectLoad }) {
                           key={`${project.projectId}-${project.deletedAt || displayIndex}-${displayIndex}`}
                             className={`project-card ${isSelected ? 'selected' : ''}`}
                           >
-                            <input
-                              type="checkbox"
-                              className="project-checkbox"
-                              checked={isSelected}
-                              onChange={(e) => {
-                                e.stopPropagation()
-                                handleToggleSelection(project.projectId)
-                              }}
-                              onClick={(e) => e.stopPropagation()}
-                            />
-                            <button 
-                              className="project-remove"
-                              onClick={(e) => {
-                                e.stopPropagation() // Prevent opening the project when clicking X
-                                
-                                if (!user) {
-                                  alert('Please sign in to delete projects')
-                                  return
-                                }
-                                
-                                if (!project.projectId) {
-                                  console.error('Project ID missing, cannot delete. Project:', project)
-                                  alert('Error: Project ID missing. Cannot delete project.')
-                                  return
-                                }
-                                
-                                // Show custom confirmation modal
-                                setDeleteModal({ show: true, project, isPermanent: false, isBulk: false })
-                              }}
-                              aria-label="Delete project"
-                            >
-                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                <line x1="18" y1="6" x2="6" y2="18" />
-                                <line x1="6" y1="6" x2="18" y2="18" />
-                              </svg>
-                            </button>
                             <div 
                               className="project-card-content"
                               onClick={async () => {
@@ -1496,6 +1575,32 @@ function FileUploader({ onProjectLoad }) {
                                     }
                                   })
                                   
+                                  // Debug: Check CSS content when loading from Supabase
+                                  const cssFile = files.find(f => f.name.endsWith('.css'))
+                                  if (cssFile) {
+                                    const savedColors = ['#004aeb', '#0854f7', '#004AEB', '#0854F7']
+                                    const foundSavedColors = savedColors.filter(color => cssFile.content.includes(color))
+                                    const sectionTitleColorRules = cssFile.content.match(/\.section-title[^{]*\{[^}]*color[^}]*\}/gi) || []
+                                    const sectionTitleColorValues = sectionTitleColorRules.map(rule => {
+                                      const colorMatch = rule.match(/color\s*:\s*([^;!]+)/i)
+                                      return colorMatch ? colorMatch[1].trim() : null
+                                    }).filter(Boolean)
+                                    
+                                    console.log('📥 Loading CSS from Supabase:', {
+                                      fileName: cssFile.name,
+                                      contentLength: cssFile.content.length,
+                                      savedColorsFound: foundSavedColors.length > 0 ? `Contains ${foundSavedColors.join(', ')} ✓` : 'No saved colors found ✗',
+                                      sectionTitleColorRules: sectionTitleColorRules.length,
+                                      sectionTitleColorValues: sectionTitleColorValues,
+                                      cssPreview: cssFile.content.includes('.section-title') 
+                                        ? cssFile.content.substring(
+                                            Math.max(0, cssFile.content.indexOf('.section-title') - 50),
+                                            cssFile.content.indexOf('.section-title') + 500
+                                          )
+                                        : '.section-title not found'
+                                    })
+                                  }
+                                  
                                   console.log('Opening project from All Projects:', project.name, 'with', files.length, 'files')
                                   onProjectLoad(files, true, project.name) // true = loaded from All Projects, project.name = default name
                                 } catch (error) {
@@ -1511,13 +1616,62 @@ function FileUploader({ onProjectLoad }) {
                                 </svg>
                               </div>
                           <div className="project-info">
-                            <div className="project-name" title={project.name}>
-                              {project.name.length > 20 ? `${project.name.substring(0, 20)}...` : project.name}
-                            </div>
-                            <div className="project-meta">
-                              {project.fileCount} file{project.fileCount !== 1 ? 's' : ''}
-                            </div>
+                            {editingProjectId === project.projectId ? (
+                              <input
+                                ref={editingInputRef}
+                                type="text"
+                                value={editingProjectName}
+                                onChange={(e) => setEditingProjectName(e.target.value)}
+                                onBlur={() => handleSaveProjectName(project.projectId, editingProjectName)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') {
+                                    e.target.blur()
+                                  } else if (e.key === 'Escape') {
+                                    handleCancelEditing()
+                                  }
+                                }}
+                                className="project-name-input"
+                                onClick={(e) => e.stopPropagation()}
+                              />
+                            ) : (
+                              <>
+                                <div className="project-name" title={project.name}>
+                                  {project.name.length > 20 ? `${project.name.substring(0, 20)}...` : project.name}
+                                </div>
+                                <div className="project-meta">
+                                  {project.fileCount} file{project.fileCount !== 1 ? 's' : ''}
+                                </div>
+                              </>
+                            )}
                           </div>
+                          {editingProjectId !== project.projectId && (
+                            <div className="project-right-actions">
+                              <button
+                                className="project-name-edit-button"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  handleStartEditing(project.projectId, project.name)
+                                }}
+                                title="Edit project name"
+                                aria-label="Edit project name"
+                              >
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                  <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                                  <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                                </svg>
+                              </button>
+                              <input
+                                type="checkbox"
+                                className="project-checkbox"
+                                checked={isSelected}
+                                onChange={(e) => {
+                                  e.stopPropagation()
+                                  handleToggleSelection(project.projectId)
+                                }}
+                                onClick={(e) => e.stopPropagation()}
+                              />
+                            </div>
+                          )}
                             </div>
                           </div>
                           )
@@ -1566,20 +1720,6 @@ function FileUploader({ onProjectLoad }) {
                           key={project.path || project.name || displayIndex} 
                           className={`project-card deleted ${isSelected ? 'selected' : ''}`}
                         >
-                          <input
-                            type="checkbox"
-                            className="project-checkbox"
-                            checked={isSelected}
-                            onChange={(e) => {
-                              e.stopPropagation()
-                              // Only toggle if not already in the process of toggling
-                              handleToggleSelection(project.projectId)
-                            }}
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              // Prevent double-toggle
-                            }}
-                          />
                           <div className="project-actions">
                             <button 
                               className="project-restore"
@@ -1595,22 +1735,6 @@ function FileUploader({ onProjectLoad }) {
                                 <path d="M21 3v5h-5" />
                                 <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" />
                                 <path d="M3 21v-5h5" />
-                              </svg>
-                            </button>
-                            <button 
-                              className="project-remove"
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                if (window.confirm(`Permanently delete "${project.name}"? This cannot be undone.`)) {
-                                  handlePermanentDelete(project.projectId)
-                                }
-                              }}
-                              aria-label="Permanently delete project"
-                              title="Permanently delete"
-                            >
-                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                <polyline points="3 6 5 6 21 6" />
-                                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
                               </svg>
                             </button>
                           </div>
@@ -1668,17 +1792,68 @@ function FileUploader({ onProjectLoad }) {
                               </svg>
                             </div>
                             <div className="project-info">
-                              <div className="project-name" title={project.name}>
-                                {project.name.length > 20 ? `${project.name.substring(0, 20)}...` : project.name}
-                              </div>
-                              <div className="project-meta">
-                                {(() => {
-                                  const deletedDate = new Date(project.deletedAt || Date.now())
-                                  const daysAgo = Math.floor((Date.now() - deletedDate.getTime()) / (1000 * 60 * 60 * 24))
-                                  return `${project.fileCount} file${project.fileCount !== 1 ? 's' : ''} • Deleted ${daysAgo === 0 ? 'today' : `${daysAgo} day${daysAgo !== 1 ? 's' : ''} ago`}`
-                                })()}
-                              </div>
+                              {editingProjectId === project.projectId ? (
+                                <input
+                                  ref={editingInputRef}
+                                  type="text"
+                                  value={editingProjectName}
+                                  onChange={(e) => setEditingProjectName(e.target.value)}
+                                  onBlur={() => handleSaveProjectName(project.projectId, editingProjectName)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                      e.target.blur()
+                                    } else if (e.key === 'Escape') {
+                                      handleCancelEditing()
+                                    }
+                                  }}
+                                  className="project-name-input"
+                                  onClick={(e) => e.stopPropagation()}
+                                />
+                              ) : (
+                                <>
+                                  <div className="project-name" title={project.name}>
+                                    {project.name.length > 20 ? `${project.name.substring(0, 20)}...` : project.name}
+                                  </div>
+                                  <div className="project-meta">
+                                    {(() => {
+                                      const deletedDate = new Date(project.deletedAt || Date.now())
+                                      const daysAgo = Math.floor((Date.now() - deletedDate.getTime()) / (1000 * 60 * 60 * 24))
+                                      return `${project.fileCount} file${project.fileCount !== 1 ? 's' : ''} • Deleted ${daysAgo === 0 ? 'today' : `${daysAgo} day${daysAgo !== 1 ? 's' : ''} ago`}`
+                                    })()}
+                                  </div>
+                                </>
+                              )}
                             </div>
+                            {editingProjectId !== project.projectId && (
+                              <div className="project-right-actions">
+                                <button
+                                  className="project-name-edit-button"
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    handleStartEditing(project.projectId, project.name)
+                                  }}
+                                  title="Edit project name"
+                                  aria-label="Edit project name"
+                                >
+                                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                                  </svg>
+                                </button>
+                                <input
+                                  type="checkbox"
+                                  className="project-checkbox"
+                                  checked={isSelected}
+                                  onChange={(e) => {
+                                    e.stopPropagation()
+                                    handleToggleSelection(project.projectId)
+                                  }}
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                  }}
+                                />
+                              </div>
+                            )}
                           </div>
                         </div>
                       )

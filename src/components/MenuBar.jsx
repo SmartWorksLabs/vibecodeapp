@@ -22,7 +22,10 @@ function MenuBar({
   isInspectorEnabled, 
   onInspectorToggle, 
   onSettingsToggle,
-  onReturnToWelcome
+  onReturnToWelcome,
+  gridOverlay,
+  onGridOverlayChange,
+  projectName
 }) {
   const [activeMenu, setActiveMenu] = useState(null)
   const [isMac, setIsMac] = useState(false)
@@ -45,80 +48,19 @@ function MenuBar({
     {
       label: 'File',
       items: [
-        { label: 'New Project' },
-        { label: 'Open Project...' },
-        { label: 'Open Recent', hasSubmenu: true },
-        { type: 'separator' },
-        { label: 'Save' },
-        { label: 'Save As...' },
-        { type: 'separator' },
-        { label: 'Export Project...' },
-        { label: 'Close Project' },
-        { type: 'separator' },
         { label: isMac ? 'Quit VibeCanvas' : 'Exit' }
-      ]
-    },
-    {
-      label: 'Edit',
-      items: [
-        { label: 'Undo' },
-        { label: 'Redo' },
-        { type: 'separator' },
-        { label: 'Cut' },
-        { label: 'Copy' },
-        { label: 'Paste' },
-        { type: 'separator' },
-        { label: 'Select All' },
-        { type: 'separator' },
-        { label: 'Find' },
-        { label: 'Replace' }
       ]
     },
     {
       label: 'View',
       items: [
-        { label: 'Zoom In' },
-        { label: 'Zoom Out' },
-        { label: 'Reset Zoom' },
-        { type: 'separator' },
         { label: 'Toggle Element Inspector' },
-        { label: 'Toggle Grid Overlay' },
-        { type: 'separator' },
-        { label: 'Full Screen' },
-        { label: 'Toggle Sidebar' }
-      ]
-    },
-    {
-      label: 'Project',
-      items: [
-        { label: 'Project Settings...' },
-        { label: 'Manage Files...' },
-        { type: 'separator' },
-        { label: 'Import Assets...' },
-        { label: 'Export Assets...' },
-        { type: 'separator' },
-        { label: 'Project Properties...' }
-      ]
-    },
-    {
-      label: 'Tools',
-      items: [
-        { label: 'Code Editor' },
-        { label: 'Properties Panel' },
-        { type: 'separator' },
-        { label: 'Developer Tools' },
-        { label: 'Console' }
+        { label: 'Toggle Grid Overlay' }
       ]
     },
     {
       label: 'Help',
       items: [
-        { label: 'Documentation' },
-        { label: 'Keyboard Shortcuts' },
-        { type: 'separator' },
-        { label: 'Report Issue' },
-        { label: 'Check for Updates' },
-        { type: 'separator' },
         { label: 'About VibeCanvas' }
       ]
     }
@@ -169,6 +111,16 @@ function MenuBar({
     if (itemLabel === (isMac ? 'Quit VibeCanvas' : 'Exit')) {
       if (onReturnToWelcome) {
         onReturnToWelcome()
+      }
+    } else if (itemLabel === 'Toggle Element Inspector') {
+      if (onInspectorToggle) {
+        onInspectorToggle(!isInspectorEnabled)
+      }
+    } else if (itemLabel === 'Toggle Grid Overlay') {
+      if (onGridOverlayChange) {
+        // Toggle between 'none' and 'flexible' (or cycle through options)
+        const nextValue = gridOverlay === 'none' ? 'flexible' : 'none'
+        onGridOverlayChange(nextValue)
       }
     }
     // Close menu after clicking
@@ -224,6 +176,13 @@ function MenuBar({
             )}
           </div>
         ))}
+      </div>
+      <div className="menu-bar-center">
+        {projectName && (
+          <div className="menu-project-name-container">
+                <span className="menu-project-name-text">{projectName}</span>
+          </div>
+        )}
       </div>
       <div className="menu-bar-right">
         <div className="menu-status-container">

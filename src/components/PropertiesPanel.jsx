@@ -8,12 +8,10 @@ function PropertiesPanel({ element, onPropertyChange, isInspectorEnabled, onText
     backgroundColor: '#ffffff',
     color: '#000000',
     fontSize: '16px',
-    padding: { top: '0', right: '0', bottom: '0', left: '0' },
-    margin: { top: '0', right: '0', bottom: '0', left: '0' },
+    textAlign: 'left',
     borderWidth: '0',
     borderColor: '#000000',
     borderStyle: 'solid',
-    borderRadius: '0',
     width: 'auto',
     height: 'auto',
     display: 'block'
@@ -22,6 +20,7 @@ function PropertiesPanel({ element, onPropertyChange, isInspectorEnabled, onText
   // Local state for text inputs to prevent cursor jumping
   const [localTextContent, setLocalTextContent] = useState('')
   const [localPlaceholder, setLocalPlaceholder] = useState('')
+  const [localFontSize, setLocalFontSize] = useState('')
   const [childTextElements, setChildTextElements] = useState([])
   const liveUpdateTimeoutRef = useRef(null)
 
@@ -101,22 +100,46 @@ function PropertiesPanel({ element, onPropertyChange, isInspectorEnabled, onText
       const newTextContent = element.textContent || '';
       const newPlaceholder = element.placeholder || '';
       
+      // Normalize colors to hex format for consistency
+      const normalizeColor = (color) => {
+        if (!color) return color
+        if (typeof color === 'string' && color.startsWith('#')) {
+          return color.toLowerCase()
+        }
+        if (typeof color === 'string' && color.startsWith('rgb')) {
+          const match = color.match(/\d+/g)
+          if (match && match.length >= 3) {
+            const r = parseInt(match[0])
+            const g = parseInt(match[1])
+            const b = parseInt(match[2])
+            return '#' + [r, g, b].map(x => {
+              const hex = x.toString(16)
+              return hex.length === 1 ? '0' + hex : hex
+            }).join('').toLowerCase()
+          }
+        }
+        return color
+      }
+
+      const fontSizeValue = element.styles?.fontSize || '16px'
+
       setProperties({
         textContent: newTextContent,
         placeholder: newPlaceholder,
-        backgroundColor: element.styles?.backgroundColor || '#ffffff',
-        color: element.styles?.color || '#000000',
-        fontSize: element.styles?.fontSize || '16px',
-        padding: parseSpacing(element.styles?.padding || '0'),
-        margin: parseSpacing(element.styles?.margin || '0'),
+        backgroundColor: normalizeColor(element.styles?.backgroundColor) || '#ffffff',
+        color: normalizeColor(element.styles?.color) || '#000000',
+        fontSize: fontSizeValue,
+        textAlign: element.styles?.textAlign || 'left',
         borderWidth: parseBorderWidth(element.styles?.border || '0'),
-        borderColor: parseBorderColor(element.styles?.border || '#000000'),
+        borderColor: normalizeColor(parseBorderColor(element.styles?.border || '#000000')),
         borderStyle: parseBorderStyle(element.styles?.border || 'solid'),
-        borderRadius: element.styles?.borderRadius || '0',
         width: element.styles?.width || 'auto',
         height: element.styles?.height || 'auto',
         display: element.styles?.display || 'block'
       })
+      
+      // Initialize local font size state to prevent cursor jumping
+      setLocalFontSize(fontSizeValue)
       
       // Check for child text elements - use data from iframe if available
       console.log('=== CHILD TEXT DETECTION DEBUG ===');
@@ -209,16 +232,6 @@ function PropertiesPanel({ element, onPropertyChange, isInspectorEnabled, onText
     }
   }, [childTextElements.length])
 
-
-  const parseSpacing = (value) => {
-    const parts = value.split(' ').map(v => v.replace('px', ''))
-    return {
-      top: parts[0] || '0',
-      right: parts[1] || parts[0] || '0',
-      bottom: parts[2] || parts[0] || '0',
-      left: parts[3] || parts[1] || parts[0] || '0'
-    }
-  }
 
   const parseBorderWidth = (border) => {
     const match = border.match(/(\d+(?:\.\d+)?)px/)
@@ -320,11 +333,7 @@ function PropertiesPanel({ element, onPropertyChange, isInspectorEnabled, onText
     }
 
     // Convert property name to CSS property
-    if (prop === 'padding' || prop === 'margin') {
-      const spacing = typeof value === 'object' ? value : properties[prop]
-      const spacingValue = `${spacing.top}px ${spacing.right}px ${spacing.bottom}px ${spacing.left}px`
-      onPropertyChange(prop, spacingValue)
-    } else if (prop === 'borderWidth' || prop === 'borderColor' || prop === 'borderStyle') {
+    if (prop === 'borderWidth' || prop === 'borderColor' || prop === 'borderStyle') {
       // Update all border properties together
       const borderValue = `${properties.borderWidth}px ${properties.borderStyle} ${properties.borderColor}`
       onPropertyChange('border', borderValue)
@@ -334,7 +343,7 @@ function PropertiesPanel({ element, onPropertyChange, isInspectorEnabled, onText
         backgroundColor: 'backgroundColor',
         color: 'color',
         fontSize: 'fontSize',
-        borderRadius: 'borderRadius',
+        textAlign: 'textAlign',
         width: 'width',
         height: 'height',
         display: 'display'
@@ -578,8 +587,13 @@ function PropertiesPanel({ element, onPropertyChange, isInspectorEnabled, onText
             type="text"
             value={properties.backgroundColor}
             onChange={(e) => {
-              console.log('Background color text changed:', e.target.value);
-              handlePropertyChange('backgroundColor', e.target.value);
+              let colorValue = e.target.value.trim()
+              // Ensure hex colors have # prefix
+              if (colorValue && !colorValue.startsWith('#') && /^[0-9A-Fa-f]{6}$/.test(colorValue)) {
+                colorValue = '#' + colorValue
+              }
+              console.log('Background color text changed:', e.target.value, '->', colorValue);
+              handlePropertyChange('backgroundColor', colorValue);
             }}
             className="property-input"
           />
@@ -598,7 +612,14 @@ function PropertiesPanel({ element, onPropertyChange, isInspectorEnabled, onText
             <input
               type="text"
               value={properties.color}
-              onChange={(e) => handlePropertyChange('color', e.target.value)}
+              onChange={(e) => {
+                let colorValue = e.target.value.trim()
+                // Ensure hex colors have # prefix
+                if (colorValue && !colorValue.startsWith('#') && /^[0-9A-Fa-f]{6}$/.test(colorValue)) {
+                  colorValue = '#' + colorValue
+                }
+                handlePropertyChange('color', colorValue)
+              }}
               className="property-input"
             />
           </div>
@@ -609,95 +630,102 @@ function PropertiesPanel({ element, onPropertyChange, isInspectorEnabled, onText
             <label className="property-label">Font Size</label>
             <input
               type="text"
-              value={properties.fontSize}
-              onChange={(e) => handlePropertyChange('fontSize', e.target.value)}
+              value={localFontSize || ''}
+              onChange={(e) => {
+                // Update local state only - no cursor jumping
+                setLocalFontSize(e.target.value);
+              }}
+              onBlur={(e) => {
+                // Commit the change when user is done editing
+                let finalValue = e.target.value.trim() || properties.fontSize || '16px';
+                
+                // Ensure font-size has a unit (px, rem, em, %)
+                if (finalValue && finalValue !== '') {
+                  const hasUnit = /px|rem|em|%|pt|ex|ch|vw|vh|vmin|vmax/i.test(finalValue);
+                  if (!hasUnit && /^\d+\.?\d*$/.test(finalValue)) {
+                    // If it's just a number, add 'px' unit
+                    finalValue = `${finalValue}px`;
+                    console.log('🔧 Added missing unit to fontSize:', finalValue);
+                  }
+                } else {
+                  finalValue = '16px'; // Default fallback
+                }
+                
+                setLocalFontSize(finalValue);
+                handlePropertyChange('fontSize', finalValue);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  // Commit on Enter key
+                  e.target.blur();
+                }
+              }}
               className="property-input property-input-small"
-            />
-          </div>
-          <div className="property-item">
-            <label className="property-label">Border Radius</label>
-            <input
-              type="text"
-              value={properties.borderRadius}
-              onChange={(e) => handlePropertyChange('borderRadius', e.target.value)}
-              className="property-input property-input-small"
+              placeholder="e.g. 16px, 1.5rem, 120%"
             />
           </div>
         </div>
 
         <div className="property-group">
-          <label className="property-label">Padding</label>
-          <div className="spacing-controls">
-            <input
-              type="number"
-              placeholder="T"
-              value={properties.padding.top}
-              onChange={(e) => handlePropertyChange('padding', { ...properties.padding, top: e.target.value })}
-              className="spacing-input"
-              title="Top"
-            />
-            <input
-              type="number"
-              placeholder="R"
-              value={properties.padding.right}
-              onChange={(e) => handlePropertyChange('padding', { ...properties.padding, right: e.target.value })}
-              className="spacing-input"
-              title="Right"
-            />
-            <input
-              type="number"
-              placeholder="B"
-              value={properties.padding.bottom}
-              onChange={(e) => handlePropertyChange('padding', { ...properties.padding, bottom: e.target.value })}
-              className="spacing-input"
-              title="Bottom"
-            />
-            <input
-              type="number"
-              placeholder="L"
-              value={properties.padding.left}
-              onChange={(e) => handlePropertyChange('padding', { ...properties.padding, left: e.target.value })}
-              className="spacing-input"
+          <label className="property-label">Alignment</label>
+          <div className="alignment-controls" style={{ display: 'flex', gap: '0.5rem' }}>
+            <button
+              type="button"
+              onClick={() => handlePropertyChange('textAlign', 'left')}
+              className={properties.textAlign === 'left' ? 'alignment-btn active' : 'alignment-btn'}
               title="Left"
-            />
-          </div>
-        </div>
-
-        <div className="property-group">
-          <label className="property-label">Margin</label>
-          <div className="spacing-controls">
-            <input
-              type="number"
-              placeholder="T"
-              value={properties.margin.top}
-              onChange={(e) => handlePropertyChange('margin', { ...properties.margin, top: e.target.value })}
-              className="spacing-input"
-              title="Top"
-            />
-            <input
-              type="number"
-              placeholder="R"
-              value={properties.margin.right}
-              onChange={(e) => handlePropertyChange('margin', { ...properties.margin, right: e.target.value })}
-              className="spacing-input"
+              style={{
+                flex: 1,
+                padding: '0.5rem',
+                background: properties.textAlign === 'left' ? '#4a9eff' : '#2a2a2a',
+                border: '1px solid #3a3a3a',
+                borderRadius: '4px',
+                color: properties.textAlign === 'left' ? '#fff' : '#e0e0e0',
+                cursor: 'pointer',
+                fontSize: '0.75rem',
+                fontWeight: properties.textAlign === 'left' ? '600' : '400'
+              }}
+            >
+              Left
+            </button>
+            <button
+              type="button"
+              onClick={() => handlePropertyChange('textAlign', 'center')}
+              className={properties.textAlign === 'center' ? 'alignment-btn active' : 'alignment-btn'}
+              title="Center"
+              style={{
+                flex: 1,
+                padding: '0.5rem',
+                background: properties.textAlign === 'center' ? '#4a9eff' : '#2a2a2a',
+                border: '1px solid #3a3a3a',
+                borderRadius: '4px',
+                color: properties.textAlign === 'center' ? '#fff' : '#e0e0e0',
+                cursor: 'pointer',
+                fontSize: '0.75rem',
+                fontWeight: properties.textAlign === 'center' ? '600' : '400'
+              }}
+            >
+              Center
+            </button>
+            <button
+              type="button"
+              onClick={() => handlePropertyChange('textAlign', 'right')}
+              className={properties.textAlign === 'right' ? 'alignment-btn active' : 'alignment-btn'}
               title="Right"
-            />
-            <input
-              type="number"
-              placeholder="B"
-              value={properties.margin.bottom}
-              onChange={(e) => handlePropertyChange('margin', { ...properties.margin, bottom: e.target.value })}
-              className="spacing-input"
-              title="Bottom"
-            />
-            <input
-              type="number"
-              placeholder="L"
-              value={properties.margin.left}
-              onChange={(e) => handlePropertyChange('margin', { ...properties.margin, left: e.target.value })}
-              className="spacing-input"
-              title="Left"
-            />
+              style={{
+                flex: 1,
+                padding: '0.5rem',
+                background: properties.textAlign === 'right' ? '#4a9eff' : '#2a2a2a',
+                border: '1px solid #3a3a3a',
+                borderRadius: '4px',
+                color: properties.textAlign === 'right' ? '#fff' : '#e0e0e0',
+                cursor: 'pointer',
+                fontSize: '0.75rem',
+                fontWeight: properties.textAlign === 'right' ? '600' : '400'
+              }}
+            >
+              Right
+            </button>
           </div>
         </div>
 
