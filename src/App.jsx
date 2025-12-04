@@ -723,7 +723,20 @@ function App() {
   }
 
   // Manual save function that persists changes and saves to All Projects
-  const handleManualSave = useCallback(async (overrideFiles = null) => {
+  const handleManualSave = useCallback(async (overrideFilesOrEvent = null) => {
+    // Handle button click events: if first param is a React event, ignore it and use state
+    let overrideFiles = null
+    if (overrideFilesOrEvent) {
+      // Check if it's a React event (has nativeEvent or target property)
+      if (overrideFilesOrEvent.nativeEvent || overrideFilesOrEvent.target) {
+        console.log('🔘 Save button clicked - using projectFiles from state')
+        overrideFiles = null // Use projectFiles from state instead
+      } else {
+        // It's a files array passed programmatically
+        overrideFiles = overrideFilesOrEvent
+      }
+    }
+    
     if (!projectFiles && !overrideFiles) {
       console.warn('Cannot save - no project files');
       return;
@@ -750,6 +763,15 @@ function App() {
       // The UI already shows the changes (they're in the iframe), so we don't want to touch state
       // Use overrideFiles if provided (for direct CSS updates), otherwise use projectFiles
       let filesToSave = overrideFiles || projectFiles
+      
+      // Safety check: Ensure we have valid files to save
+      if (!filesToSave || !Array.isArray(filesToSave)) {
+        console.error('❌ Cannot save: filesToSave is not an array', { filesToSave, overrideFiles, projectFiles })
+        setSaveStatus('unsaved')
+        isInternalUpdateRef.current = false
+        alert('Cannot save: Project files are not available. Please reload the project and try again.')
+        return
+      }
       
       // Apply pending CSS changes first
       // Skip if overrideFiles is provided (those files already have the changes we want)
@@ -788,8 +810,24 @@ function App() {
             changesBySelector.forEach((selectorChanges, selector) => {
               // Convert property names to CSS properties (camelCase to kebab-case)
               const cssProperties = selectorChanges.map(change => {
+                // Log the original property before conversion to debug property mix-ups
+                console.log('🔄 Converting property:', {
+                  original: change.property,
+                  value: change.value,
+                  selector: selector
+                })
+                
                 // Convert camelCase to kebab-case for all CSS properties
                 const cssProperty = camelToKebab(change.property)
+                
+                // Verify conversion is correct
+                if (change.property === 'color' && cssProperty !== 'color') {
+                  console.error('❌ PROPERTY CONVERSION ERROR: color ->', cssProperty)
+                }
+                if (change.property === 'backgroundColor' && cssProperty !== 'background-color') {
+                  console.error('❌ PROPERTY CONVERSION ERROR: backgroundColor ->', cssProperty)
+                }
+                
                 return { property: cssProperty, value: change.value }
               })
 
@@ -823,18 +861,57 @@ function App() {
                   /(\{[^}]*)/,
                   (match) => {
                     let updated = match
+                    console.log('🔍 Before property removal:', updated.substring(0, 200))
+                    
                     // Remove existing properties if they exist (case-insensitive to catch variations)
                     cssProperties.forEach(({ property, value }) => {
                       const escapedProp = property.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
                       // Match property name case-insensitively, but preserve the exact value we're setting
-                      const propRegex = new RegExp(`${escapedProp}\\s*:\\s*[^;]+;?`, 'gi')
-                      updated = updated.replace(propRegex, '')
+                      // CRITICAL FIX: Prevent matching "color" inside "background-color"
+                      // Match property name only when:
+                      // 1. At start of line OR after whitespace/newline (not after a hyphen)
+                      // 2. Followed by colon (not hyphen or other character)
+                      // This ensures "color" doesn't match inside "background-color"
+                      const propRegex = new RegExp(`(^|[\\s\\n])${escapedProp}(?!-)\\s*:\\s*[^;]+;?`, 'gim')
+                      const beforeReplace = updated
+                      updated = updated.replace(propRegex, '$1') // Replace with captured boundary (preserves whitespace/newline)
+                      if (beforeReplace !== updated) {
+                        console.log(`✅ Removed existing ${property} property`)
+                      }
                     })
+                    
+                    // CRITICAL FIX: If we're adding "color", also remove "background-color" entirely
+                    // This prevents "background-color" from being partially removed leaving "background-"
+                    cssProperties.forEach(({ property, value }) => {
+                      if (property === 'color') {
+                        // Remove any "background-color" property entirely
+                        const bgColorRegex = /background-color\s*:\s*[^;]+;?/gi
+                        updated = updated.replace(bgColorRegex, '')
+                        console.log('✅ Removed background-color property (replacing with color)')
+                      }
+                    })
+                    
+                    // CRITICAL FIX: Clean up any orphaned "background-" text left behind
+                    // This can happen if "background-color" was partially removed
+                    // Remove any standalone "background-" followed by whitespace/newlines
+                    updated = updated.replace(/background-\s*\n\s*/g, '')
+                    updated = updated.replace(/background-\s+/g, '')
+                    
+                    console.log('🔍 After property removal:', updated.substring(0, 200))
+                    
               // Add new properties with EXACT values (preserve user's exact input)
               // Use !important to ensure our rules override existing ones
               cssProperties.forEach(({ property, value }) => {
+                // Log each property being added to verify it's correct
+                console.log('➕ Adding CSS property to rule:', {
+                  property: property,
+                  value: value,
+                  selector: selector
+                })
                 updated += `\n  ${property}: ${value} !important;`
               })
+              
+              console.log('🔍 After adding properties:', updated.substring(0, 300))
                     return updated
                   }
                 )
@@ -1015,7 +1092,22 @@ function App() {
       // Store whether we had pending changes BEFORE clearing them
       const hadPendingChanges = pendingTextChanges.size > 0 || pendingCSSChanges.size > 0
       
-      if (currentProjectName && filesToSave) {
+      // Safety check: Ensure filesToSave is a valid array before proceeding
+      if (!filesToSave || !Array.isArray(filesToSave)) {
+        console.error('❌ Cannot save: filesToSave is not an array', { 
+          filesToSave, 
+          type: typeof filesToSave,
+          isArray: Array.isArray(filesToSave),
+          overrideFiles: overrideFiles ? 'provided' : 'not provided',
+          projectFiles: projectFiles ? 'available' : 'not available'
+        })
+        setSaveStatus('unsaved')
+        isInternalUpdateRef.current = false
+        alert('Cannot save: Project files are not available. Please reload the project and try again.')
+        return
+      }
+      
+      if (currentProjectName) {
         console.log('=== SAVING TO ALL PROJECTS ===')
         console.log('Project name:', currentProjectName)
         console.log('Files count:', filesToSave.length)
@@ -1391,6 +1483,7 @@ function App() {
     // Special logging for color properties to debug persistence issues
     if (property === 'color' || property === 'backgroundColor') {
       console.log(`🎨 COLOR CHANGE STORED: ${property} = "${finalValue}" for selector "${selector}"`)
+      console.log(`🎨 VERIFYING PROPERTY NAME: property="${property}" (should be "color" or "backgroundColor")`)
     }
     
     // Special logging for fontSize to ensure units are present
@@ -1406,17 +1499,27 @@ function App() {
         const oldChange = prev.get(changeKey)
         console.log('⚠️ OVERWRITING existing CSS change:', {
           key: changeKey,
+          oldProperty: oldChange.property,
+          newProperty: property,
           oldValue: oldChange.value,
           newValue: finalValue,
-          property: property,
           selector: selector
         })
+        
+        // Warn if property name is changing (this shouldn't happen for the same changeKey)
+        if (oldChange.property !== property) {
+          console.error('❌ PROPERTY NAME CHANGED during overwrite!', {
+            old: oldChange.property,
+            new: property,
+            changeKey: changeKey
+          })
+        }
       }
       newMap.set(changeKey, {
         fileName: cssFile.name,
         selector: selector, // This is the final selector (with page prefixes if needed)
         baseSelector: baseSelector, // Store base selector for reference
-        property: property,
+        property: property, // Store the EXACT property name (color or backgroundColor)
         value: finalValue,
         element: selectedElement,
         selectedPages: selectedPages, // Store selected pages for reference

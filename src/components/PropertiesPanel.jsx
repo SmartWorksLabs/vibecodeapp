@@ -128,10 +128,37 @@ function PropertiesPanel({ element, onPropertyChange, isInspectorEnabled, onText
       
       // Normalize colors to hex format for consistency
       const normalizeColor = (color) => {
-        if (!color) return color
+        if (!color) return '#ffffff' // Default to white for empty/null
         if (typeof color === 'string' && color.startsWith('#')) {
           return color.toLowerCase()
         }
+        
+        // Handle transparent/rgba(0,0,0,0) - convert to white for display
+        if (typeof color === 'string' && (color.includes('rgba') || color.includes('transparent'))) {
+          const rgbaMatch = color.match(/rgba?\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i)
+          if (rgbaMatch) {
+            const r = parseInt(rgbaMatch[1])
+            const g = parseInt(rgbaMatch[2])
+            const b = parseInt(rgbaMatch[3])
+            const a = color.match(/,\s*([\d.]+)\s*\)/)?.[1] ? parseFloat(color.match(/,\s*([\d.]+)\s*\)/)[1]) : 1
+            
+            // If fully transparent, return white
+            if (a === 0 || (r === 0 && g === 0 && b === 0 && a === 0)) {
+              return '#ffffff'
+            }
+            
+            // Otherwise convert rgba to hex
+            return '#' + [r, g, b].map(x => {
+              const hex = x.toString(16)
+              return hex.length === 1 ? '0' + hex : hex
+            }).join('').toLowerCase()
+          }
+          // If it's just "transparent", return white
+          if (color.trim().toLowerCase() === 'transparent') {
+            return '#ffffff'
+          }
+        }
+        
         if (typeof color === 'string' && color.startsWith('rgb')) {
           const match = color.match(/\d+/g)
           if (match && match.length >= 3) {
@@ -144,7 +171,9 @@ function PropertiesPanel({ element, onPropertyChange, isInspectorEnabled, onText
             }).join('').toLowerCase()
           }
         }
-        return color
+        
+        // Default to white for unrecognized formats (instead of returning the original)
+        return '#ffffff'
       }
 
       const fontSizeValue = element.styles?.fontSize || '16px'
@@ -1009,7 +1038,35 @@ function PropertiesPanel({ element, onPropertyChange, isInspectorEnabled, onText
 }
 
 function rgbToHex(rgb) {
+  if (!rgb || typeof rgb !== 'string') return '#ffffff'
   if (rgb.startsWith('#')) return rgb
+  
+  // Handle transparent/rgba(0,0,0,0) - show as white for color picker
+  if (rgb.includes('rgba') || rgb.includes('transparent')) {
+    const rgbaMatch = rgb.match(/rgba?\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i)
+    if (rgbaMatch) {
+      const r = parseInt(rgbaMatch[1])
+      const g = parseInt(rgbaMatch[2])
+      const b = parseInt(rgbaMatch[3])
+      const a = rgb.match(/,\s*([\d.]+)\s*\)/)?.[1] ? parseFloat(rgb.match(/,\s*([\d.]+)\s*\)/)[1]) : 1
+      
+      // If fully transparent, return white (for color picker display)
+      if (a === 0 || (r === 0 && g === 0 && b === 0 && a === 0)) {
+        return '#ffffff'
+      }
+      
+      // Otherwise convert rgba to hex
+      return '#' + [r, g, b].map(x => {
+        const hex = x.toString(16)
+        return hex.length === 1 ? '0' + hex : hex
+      }).join('')
+    }
+    // If it's just "transparent", return white
+    if (rgb.trim().toLowerCase() === 'transparent') {
+      return '#ffffff'
+    }
+  }
+  
   if (rgb.startsWith('rgb')) {
     const match = rgb.match(/\d+/g)
     if (match && match.length >= 3) {
@@ -1019,7 +1076,7 @@ function rgbToHex(rgb) {
       }).join('')
     }
   }
-  return '#000000'
+  return '#ffffff' // Default to white instead of black for backgrounds
 }
 
 export default PropertiesPanel
