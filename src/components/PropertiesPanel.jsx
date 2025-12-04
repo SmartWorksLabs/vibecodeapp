@@ -963,36 +963,6 @@ function PropertiesPanel({ element, onPropertyChange, isInspectorEnabled, onText
           </div>
         </div>
 
-        <div className="property-group">
-          <label className="property-label">Border</label>
-          <div className="border-controls">
-            <input
-              type="number"
-              placeholder="W"
-              value={properties.borderWidth}
-              onChange={(e) => handlePropertyChange('borderWidth', e.target.value)}
-              className="property-input"
-              title="Width"
-            />
-            <select
-              value={properties.borderStyle}
-              onChange={(e) => handlePropertyChange('borderStyle', e.target.value)}
-              className="property-select"
-            >
-              <option value="solid">Solid</option>
-              <option value="dashed">Dashed</option>
-              <option value="dotted">Dotted</option>
-              <option value="none">None</option>
-            </select>
-            <input
-              type="color"
-              value={rgbToHex(properties.borderColor)}
-              onChange={(e) => handlePropertyChange('borderColor', e.target.value)}
-              className="color-picker-small"
-            />
-          </div>
-        </div>
-
         <div className="property-group property-group-row">
           <div className="property-item">
             <label className="property-label">Width</label>
@@ -1012,22 +982,6 @@ function PropertiesPanel({ element, onPropertyChange, isInspectorEnabled, onText
               className="property-input property-input-small"
             />
           </div>
-        </div>
-
-        <div className="property-group">
-          <label className="property-label">Display</label>
-          <select
-            value={properties.display}
-            onChange={(e) => handlePropertyChange('display', e.target.value)}
-            className="property-select property-select-small"
-          >
-            <option value="block">Block</option>
-            <option value="inline">Inline</option>
-            <option value="inline-block">Inline Block</option>
-            <option value="flex">Flex</option>
-            <option value="grid">Grid</option>
-            <option value="none">None</option>
-          </select>
         </div>
         
         {/* Spacer to ensure last content is fully visible when scrolled */}

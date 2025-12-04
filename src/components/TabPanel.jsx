@@ -1,7 +1,6 @@
 import { useState } from 'react'
 import FileTree from './FileTree'
 import PropertiesPanel from './PropertiesPanel'
-import CodeEditor from './CodeEditor'
 import Settings from './Settings'
 import './TabPanel.css'
 
@@ -15,11 +14,6 @@ function TabPanel({ files, selectedFile, onFileSelect, selectedElement, onProper
     }
     
     onFileSelect(file)
-    // If it's a CSS or JS file, switch to code tab
-    if (file.type === 'css' || file.type === 'js') {
-      setActiveTab('code')
-    }
-    // If it's an HTML file, keep current tab (or could switch to properties)
   }
 
   // If settings is open, show settings instead of normal tabs
@@ -55,12 +49,6 @@ function TabPanel({ files, selectedFile, onFileSelect, selectedElement, onProper
           Properties
         </button>
         <button
-          className={`tab-button ${activeTab === 'code' ? 'active' : ''}`}
-          onClick={() => setActiveTab('code')}
-        >
-          Code
-        </button>
-        <button
           className={`tab-button ${activeTab === 'files' ? 'active' : ''}`}
           onClick={() => setActiveTab('files')}
         >
@@ -82,21 +70,6 @@ function TabPanel({ files, selectedFile, onFileSelect, selectedElement, onProper
             onApplyCurrentStyles={onApplyCurrentStyles}
             onClearAppliedStyles={onClearAppliedStyles}
           />
-        )}
-        
-        {activeTab === 'code' && (
-          selectedFile ? (
-            <CodeEditor
-              file={selectedFile}
-              onFileUpdate={(content) => onFileUpdate(selectedFile.name, content)}
-              lineNumbers={lineNumbers}
-              tabSize={tabSize}
-            />
-          ) : (
-            <div className="tab-empty">
-              <p>Select a file to view its code</p>
-            </div>
-          )
         )}
         
         {activeTab === 'files' && (
