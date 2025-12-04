@@ -5,7 +5,6 @@ import './PreviewPane.css'
 const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElementSelect, onInspectorToggle, isInspectorEnabled, onSettingsToggle, gridOverlay, gridColor, isTextEditing, saveStatus, lastSaved, user, onAuthClick, onSaveClick, onFileSelect }, ref) => {
   const iframeRef = useRef(null)
   const [isInspecting, setIsInspecting] = useState(() => {
-    console.log('PreviewPane: Initializing isInspecting state with isInspectorEnabled:', isInspectorEnabled)
     return isInspectorEnabled ?? true
   })
   const [isLoading, setIsLoading] = useState(false)
@@ -22,14 +21,12 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
     }
     
     if (files && files.length > 0 && !hasInitialLoadRef.current) {
-      console.log('Initial project load - showing loading state');
       hasInitialLoadRef.current = true; // Mark as loaded
       setIsLoading(true);
       setHasError(false);
       
       // Clear loading state after 1 second (fallback in case iframe doesn't load)
       const timeout = setTimeout(() => {
-        console.log('Initial load timeout (fallback) - clearing loading state');
         setIsLoading(false);
       }, 1000);
       
@@ -40,7 +37,6 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
   // Send text editing state to iframe
   useEffect(() => {
     if (iframeRef.current?.contentWindow) {
-      console.log('Sending text editing state to iframe:', isTextEditing);
       iframeRef.current.contentWindow.postMessage({
         type: 'SET_TEXT_EDITING_MODE',
         isTextEditing: isTextEditing
@@ -194,6 +190,41 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
         })
         return
       }
+      
+      // Add page identifier to body tag for page-specific CSS
+      const pageId = htmlFile.name.replace('.html', '').replace(/[^a-zA-Z0-9]/g, '-')
+      console.log('🔖 Adding page ID to HTML (navigation):', pageId, 'from file:', htmlFile.name)
+      
+      // Add data-page attribute and class to body tag
+      htmlContent = htmlContent.replace(
+        /<body([^>]*)>/i,
+        (match, attributes) => {
+          // Check if data-page or class already exists
+          const hasDataPage = /data-page=["'][^"']*["']/i.test(attributes || '')
+          const hasPageClass = new RegExp(`(^|\\s)page-${pageId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(\\s|$)`, 'i').test(attributes || '')
+          
+          let newAttributes = attributes || ''
+          
+          if (!hasDataPage) {
+            newAttributes += ` data-page="${pageId}"`
+          }
+          
+          if (!hasPageClass) {
+            // Add page class, preserving existing classes
+            if (newAttributes.includes('class=')) {
+              newAttributes = newAttributes.replace(/class=["']([^"']*)["']/i, (match, classes) => {
+                return `class="${classes} page-${pageId}"`
+              })
+            } else {
+              newAttributes += ` class="page-${pageId}"`
+            }
+          }
+          
+          const result = `<body${newAttributes}>`
+          console.log('🔖 Modified body tag (navigation):', result)
+          return result
+        }
+      )
       
       // Add performance and stability optimizations to HTML
       const performanceOptimizations = `
@@ -429,6 +460,10 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
     const inspectorScript = `
       <script>
         (function() {
+          // Check body classes in iframe
+          console.log('🔖 Body classes in iframe:', document.body.className);
+          console.log('🔖 Body data-page:', document.body.getAttribute('data-page'));
+          
           let selectedElement = null;
           let highlightDiv = null;
           
@@ -615,28 +650,12 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
                   // For computed styles, convert RGB to hex to match what we saved
                   backgroundColor: (() => {
                     const inline = element.style.getPropertyValue('background-color') || element.style.backgroundColor;
-                    if (inline) return inline;
-                    const computed = computedStyle.backgroundColor;
-                    // Convert RGB to hex if needed
-                    if (computed && computed.startsWith('rgb')) {
-                      const match = computed.match(/\d+/g);
-                      if (match && match.length >= 3) {
-                        return '#' + match.slice(0, 3).map(x => {
-                          const hex = parseInt(x).toString(16);
-                          return hex.length === 1 ? '0' + hex : hex;
-                        }).join('');
-                      }
-                    }
-                    return computed;
-                  })(),
-                  color: (() => {
-                    const inline = element.style.getPropertyValue('color') || element.style.color;
                     if (inline) {
-                      console.log('📖 Reading color from inline style:', inline);
+                      console.log('📖 Reading BACKGROUND COLOR from inline style:', inline);
                       return inline;
                     }
-                    const computed = computedStyle.color;
-                    console.log('📖 Reading color from computed style:', computed);
+                    const computed = computedStyle.backgroundColor;
+                    console.log('📖 Reading BACKGROUND COLOR from computed style:', computed);
                     // Convert RGB to hex if needed
                     if (computed && computed.startsWith('rgb')) {
                       const match = computed.match(/\d+/g);
@@ -645,11 +664,34 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
                           const hexVal = parseInt(x).toString(16);
                           return hexVal.length === 1 ? '0' + hexVal : hexVal;
                         }).join('');
-                        console.log('📖 Converted RGB to hex:', computed, '->', hex);
+                        console.log('📖 Converted BACKGROUND COLOR RGB to hex:', computed, '->', hex);
                         return hex;
                       }
                     }
-                    console.log('📖 Returning computed color as-is:', computed);
+                    console.log('📖 Returning BACKGROUND COLOR computed as-is:', computed);
+                    return computed;
+                  })(),
+                  color: (() => {
+                    const inline = element.style.getPropertyValue('color') || element.style.color;
+                    if (inline) {
+                      console.log('📖 Reading TEXT COLOR from inline style:', inline);
+                      return inline;
+                    }
+                    const computed = computedStyle.color;
+                    console.log('📖 Reading TEXT COLOR from computed style:', computed);
+                    // Convert RGB to hex if needed
+                    if (computed && computed.startsWith('rgb')) {
+                      const match = computed.match(/\d+/g);
+                      if (match && match.length >= 3) {
+                        const hex = '#' + match.slice(0, 3).map(x => {
+                          const hexVal = parseInt(x).toString(16);
+                          return hexVal.length === 1 ? '0' + hexVal : hexVal;
+                        }).join('');
+                        console.log('📖 Converted TEXT COLOR RGB to hex:', computed, '->', hex);
+                        return hex;
+                      }
+                    }
+                    console.log('📖 Returning TEXT COLOR computed as-is:', computed);
                     return computed;
                   })(),
                 fontSize: element.style.fontSize || computedStyle.fontSize,
@@ -1422,13 +1464,17 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
                   uniqueId: targetElement.dataset.vibecanvasId
                 });
                 
-                const info = getElementInfo(targetElement);
-                window.selectedElementInfo = info;
-                
-                window.parent.postMessage({
-                  type: 'ELEMENT_UPDATED',
-                  element: info
-                }, '*');
+                // Wait a moment for computed styles to update before re-reading element info
+                // This ensures we get the latest values (especially for colors)
+                setTimeout(() => {
+                  const info = getElementInfo(targetElement);
+                  window.selectedElementInfo = info;
+                  
+                  window.parent.postMessage({
+                    type: 'ELEMENT_UPDATED',
+                    element: info
+                  }, '*');
+                }, 50); // Small delay to ensure computed styles are updated
               } else {
                 console.warn('No target element found for style update');
               }
@@ -1723,6 +1769,41 @@ const PreviewPane = forwardRef(({ files, selectedFile, selectedElement, onElemen
       })
 
       let htmlContent = htmlFile.content
+
+      // Add page identifier to body tag for page-specific CSS
+      const pageId = htmlFile.name.replace('.html', '').replace(/[^a-zA-Z0-9]/g, '-')
+      console.log('🔖 Adding page ID to HTML (navigation):', pageId, 'from file:', htmlFile.name)
+      
+      // Add data-page attribute and class to body tag
+      htmlContent = htmlContent.replace(
+        /<body([^>]*)>/i,
+        (match, attributes) => {
+          // Check if data-page or class already exists
+          const hasDataPage = /data-page=["'][^"']*["']/i.test(attributes || '')
+          const hasPageClass = new RegExp(`(^|\\s)page-${pageId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(\\s|$)`, 'i').test(attributes || '')
+          
+          let newAttributes = attributes || ''
+          
+          if (!hasDataPage) {
+            newAttributes += ` data-page="${pageId}"`
+          }
+          
+          if (!hasPageClass) {
+            // Add page class, preserving existing classes
+            if (newAttributes.includes('class=')) {
+              newAttributes = newAttributes.replace(/class=["']([^"']*)["']/i, (match, classes) => {
+                return `class="${classes} page-${pageId}"`
+              })
+            } else {
+              newAttributes += ` class="page-${pageId}"`
+            }
+          }
+          
+          const result = `<body${newAttributes}>`
+          console.log('🔖 Modified body tag (navigation):', result)
+          return result
+        }
+      )
 
       // Replace image src attributes with data URLs
       imageFiles.forEach(imageFile => {

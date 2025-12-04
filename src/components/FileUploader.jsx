@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect, useMemo, Fragment } from 'react'
+import { useRef, useState, useEffect, useMemo, useCallback, Fragment } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { listProjects, loadProject, loadProjectById, deleteProject, softDeleteProject, restoreProject, renameProject } from '../services/projectService'
 import AuthModal from './AuthModal'
@@ -250,7 +250,7 @@ function FileUploader({ onProjectLoad }) {
   }, [user])
   
   // Load all projects from user account (Supabase) - All Projects is the source of truth
-  const loadAllProjects = async () => {
+  const loadAllProjects = useCallback(async () => {
     // If no user yet, use cache immediately (don't fetch from Supabase)
     // This ensures cached data displays immediately on first render
     if (!user) {
@@ -295,7 +295,8 @@ function FileUploader({ onProjectLoad }) {
       
       // Read recently deleted projects from localStorage to get the latest state
       // This ensures we have the most up-to-date list even if state hasn't updated yet
-      let currentDeletedProjects = recentlyDeletedProjects
+      // Always read from localStorage to avoid stale closures
+      let currentDeletedProjects = []
       try {
         const stored = localStorage.getItem('vibecanvas_recently_deleted_projects')
         if (stored) {
@@ -468,7 +469,7 @@ function FileUploader({ onProjectLoad }) {
       // This prevents the flash of empty state if network request fails
       // The cached data will remain visible until next successful load
     }
-  }
+  }, [user])
   
   // Restore a project from recently deleted
   const handleRestoreProject = async (projectId) => {
@@ -890,7 +891,7 @@ function FileUploader({ onProjectLoad }) {
       }
     }
     // If no user, cache is already loaded during initialization, nothing to do
-  }, [user]) // Re-run when user logs in/out
+  }, [user, loadAllProjects]) // Re-run when user logs in/out or loadAllProjects changes
 
   // Refresh all projects periodically (to catch new saves) - only if user is logged in
   // Note: This is now handled in the main useEffect above with a 5-second interval

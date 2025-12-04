@@ -5,7 +5,7 @@ import CodeEditor from './CodeEditor'
 import Settings from './Settings'
 import './TabPanel.css'
 
-function TabPanel({ files, selectedFile, onFileSelect, selectedElement, onPropertyChange, onFileUpdate, isInspectorEnabled, isSettingsOpen, onSettingsClose, fontSize, onFontSizeChange, gridOverlay, onGridOverlayChange, gridColor, onGridColorChange, onTextEditingChange, showFileExtensions, onShowFileExtensionsChange, lineNumbers, onLineNumbersChange, tabSize, onTabSizeChange }) {
+function TabPanel({ files, selectedFile, onFileSelect, selectedElement, onPropertyChange, onFileUpdate, isInspectorEnabled, isSettingsOpen, onSettingsClose, fontSize, onFontSizeChange, gridOverlay, onGridOverlayChange, gridColor, onGridColorChange, onTextEditingChange, showFileExtensions, onShowFileExtensionsChange, lineNumbers, onLineNumbersChange, tabSize, onTabSizeChange, availablePages, selectedPages, onSelectedPagesChange, currentPage, onApplyCurrentStyles, onClearAppliedStyles }) {
   const [activeTab, setActiveTab] = useState('properties')
 
   const handleFileSelect = (file) => {
@@ -75,6 +75,12 @@ function TabPanel({ files, selectedFile, onFileSelect, selectedElement, onProper
             onPropertyChange={onPropertyChange}
             onTextEditingChange={onTextEditingChange}
             isInspectorEnabled={isInspectorEnabled}
+            availablePages={availablePages || []}
+            selectedPages={selectedPages || []}
+            onSelectedPagesChange={onSelectedPagesChange}
+            currentPage={currentPage}
+            onApplyCurrentStyles={onApplyCurrentStyles}
+            onClearAppliedStyles={onClearAppliedStyles}
           />
         )}
         

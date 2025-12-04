@@ -1,7 +1,33 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import './PropertiesPanel.css'
 
-function PropertiesPanel({ element, onPropertyChange, isInspectorEnabled, onTextEditingChange }) {
+function PropertiesPanel({ element, onPropertyChange, isInspectorEnabled, onTextEditingChange, availablePages = [], selectedPages = [], onSelectedPagesChange, currentPage, onApplyCurrentStyles, onClearAppliedStyles }) {
+  const [isPageSelectorOpen, setIsPageSelectorOpen] = useState(false)
+  const [stylesApplied, setStylesApplied] = useState(false)
+  const [isClearing, setIsClearing] = useState(false)
+  
+  // Ref to track if we're updating checkboxes programmatically (during element selection)
+  // This prevents onChange from firing when checkboxes are updated by code
+  const isProgrammaticUpdateRef = useRef(false)
+  
+  // When element changes, set flag to prevent onChange from firing during programmatic checkbox updates
+  useEffect(() => {
+    if (element) {
+      // Set flag to ignore onChange events during programmatic updates
+      isProgrammaticUpdateRef.current = true
+      console.log('🔒 Setting programmatic update flag (element changed)')
+      
+      // Clear flag after a short delay to allow checkboxes to update
+      // This ensures user clicks after element selection will work normally
+      const timeout = setTimeout(() => {
+        isProgrammaticUpdateRef.current = false
+        console.log('🔓 Clearing programmatic update flag')
+      }, 200) // 200ms should be enough for checkboxes to update
+      
+      return () => clearTimeout(timeout)
+    }
+  }, [element])
+  
   const [properties, setProperties] = useState({
     textContent: '',
     placeholder: '',
@@ -366,6 +392,10 @@ function PropertiesPanel({ element, onPropertyChange, isInspectorEnabled, onText
       </div>
     )
   }
+  
+  // Show scope toggle when we have an element and currentPage is available
+  // Always show it if currentPage exists (even if empty string, we'll default to 'index')
+  const showScopeToggle = element && (currentPage !== undefined && currentPage !== null)
 
   // Convert technical HTML terms to user-friendly names
   const getFriendlyElementName = (childEl) => {
@@ -476,6 +506,181 @@ function PropertiesPanel({ element, onPropertyChange, isInspectorEnabled, onText
       </div>
       
       <div className="properties-content">
+        
+        {/* Page selector - multi-select for choosing which pages styles apply to */}
+        {availablePages.length > 0 && (
+          <div className="property-group page-selector-container">
+            <div 
+              className="page-selector-header"
+              onClick={() => setIsPageSelectorOpen(!isPageSelectorOpen)}
+            >
+              <span>Apply styles to other pages</span>
+              <span className={`arrow ${isPageSelectorOpen ? 'open' : ''}`}>▼</span>
+            </div>
+            
+            {isPageSelectorOpen && (
+              <div className="page-selector-content">
+                <div className="page-checkboxes">
+                  <label className="page-option">
+                    <input 
+                      type="checkbox"
+                      checked={selectedPages.includes('all') || (selectedPages.length === availablePages.length && availablePages.length > 0)}
+                      onChange={(e) => {
+                        // Ignore onChange if this is a programmatic update (not user-initiated)
+                        if (isProgrammaticUpdateRef.current) {
+                          console.log('🔘 Ignoring programmatic checkbox update for "all"')
+                          return
+                        }
+                        console.log('🔘 All pages checkbox changed (user click):', e.target.checked)
+                        if (onSelectedPagesChange) {
+                          if (e.target.checked) {
+                            onSelectedPagesChange(['all'])
+                          } else {
+                            onSelectedPagesChange([])
+                          }
+                        }
+                        setStylesApplied(false) // Reset when selection changes
+                      }}
+                      className="page-checkbox"
+                    />
+                    <span>All pages</span>
+                  </label>
+                  
+                  {availablePages.map(page => {
+                    // Normalize both page and currentPage for comparison
+                    // Both should already be normalized from App.jsx, but normalize again to handle edge cases
+                    const normalizePageName = (pageName) => {
+                      if (!pageName) return ''
+                      return String(pageName).replace('.html', '').replace(/[^a-zA-Z0-9]/g, '-').toLowerCase().trim()
+                    }
+                    
+                    const pageId = normalizePageName(page)
+                    const normalizedCurrentPage = normalizePageName(currentPage)
+                    const isCurrentPage = pageId === normalizedCurrentPage && normalizedCurrentPage !== ''
+                    
+                    const isSelected = selectedPages.includes(page) || selectedPages.includes(pageId) || selectedPages.includes('all')
+                    const isDisabled = selectedPages.includes('all') || isCurrentPage
+                    
+                    return (
+                      <label key={pageId} className={`page-option ${isCurrentPage ? 'current-page' : ''}`}>
+                        <input 
+                          type="checkbox"
+                          checked={isSelected}
+                          disabled={isDisabled}
+                          onChange={(e) => {
+                            // Ignore onChange if this is a programmatic update (not user-initiated)
+                            if (isProgrammaticUpdateRef.current) {
+                              console.log('🔘 Ignoring programmatic checkbox update for:', pageId)
+                              return
+                            }
+                            console.log('🔘 Page checkbox changed (user click):', pageId, e.target.checked)
+                            if (onSelectedPagesChange) {
+                              if (e.target.checked) {
+                                // Add this page, remove 'all' if present
+                                const newSelection = selectedPages.filter(p => p !== 'all')
+                                onSelectedPagesChange([...newSelection, page])
+                              } else {
+                                // Remove this page (handle both with and without .html)
+                                onSelectedPagesChange(selectedPages.filter(p => p !== page && p !== pageId))
+                              }
+                            }
+                            setStylesApplied(false) // Reset when selection changes
+                          }}
+                          className="page-checkbox"
+                        />
+                        <span>
+                          {pageId}
+                          {isCurrentPage && <span className="current-badge"> (current/source)</span>}
+                        </span>
+                      </label>
+                    )
+                  })}
+                </div>
+                
+                <span className="selection-info">
+                  {selectedPages.length === 0 
+                    ? `Current page only (${currentPage || 'index'})`
+                    : selectedPages.includes('all') || selectedPages.length === availablePages.length
+                      ? 'Applies to all pages'
+                      : `Applies to ${selectedPages.length} page(s)`
+                  }
+                </span>
+                
+            {selectedPages.length > 0 && !selectedPages.includes('all') && (
+              <button 
+                className="clear-selection"
+                onClick={async () => {
+                  console.log('🗑️ Clear selection clicked')
+                  console.log('Pages to clear:', selectedPages)
+                  
+                  setIsClearing(true)
+                  
+                  // Clear the styles from CSS AND uncheck the checkboxes
+                  if (onClearAppliedStyles && element) {
+                    console.log('🗑️ Removing CSS rules and clearing checkboxes for:', selectedPages)
+                    const success = await onClearAppliedStyles(selectedPages)
+                    
+                    if (success !== false) {
+                      // Clear the selection in UI - this unchecks the checkboxes
+                      // The CSS rules have already been removed by onClearAppliedStyles
+                      if (onSelectedPagesChange) {
+                        onSelectedPagesChange([])
+                      }
+                      setStylesApplied(false)
+                      console.log('✅ CSS rules removed and checkboxes unchecked')
+                      
+                      // Note: After clearing, when you navigate or click element again,
+                      // detection will run and find no styles on those pages, so checkboxes will stay unchecked
+                      
+                      setTimeout(() => {
+                        setIsClearing(false)
+                      }, 1000)
+                    } else {
+                      console.warn('⚠️ Failed to remove CSS rules')
+                      setIsClearing(false)
+                    }
+                  } else {
+                    // Fallback: just clear selection if handler not available
+                    if (onSelectedPagesChange) {
+                      onSelectedPagesChange([])
+                    }
+                    setStylesApplied(false)
+                    setIsClearing(false)
+                  }
+                }}
+                disabled={isClearing}
+              >
+                {isClearing ? '🗑️ Clearing...' : 'Clear selection (remove from other pages)'}
+              </button>
+            )}
+                
+                {selectedPages.length > 0 && element && (
+                  <div className="apply-button-container">
+                    <button 
+                      className={`apply-styles-btn ${stylesApplied ? 'applied' : ''}`}
+                      onClick={async () => {
+                        console.log('🔘 Apply button clicked')
+                        if (onApplyCurrentStyles) {
+                          const success = await onApplyCurrentStyles(selectedPages)
+                          if (success) {
+                            setStylesApplied(true)
+                            // Reset after 2 seconds
+                            setTimeout(() => setStylesApplied(false), 2000)
+                          }
+                        } else {
+                          console.warn('⚠️ onApplyCurrentStyles is not available!')
+                        }
+                      }}
+                      disabled={stylesApplied}
+                    >
+                      {stylesApplied ? '✓ Styles Applied & Saved!' : 'Apply current styles to selected pages'}
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
         
         {/* Show child text elements if multiple, otherwise show single text content */}
         {childTextElements.length > 1 ? (

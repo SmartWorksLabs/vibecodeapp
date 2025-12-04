@@ -15,10 +15,15 @@ const camelToKebab = (str) => {
 }
 
 function App() {
-  console.log('App component rendering/re-rendering')
+  // Removed render log to prevent console freezing
   const [projectFiles, setProjectFiles] = useState(null)
   const [selectedFile, setSelectedFile] = useState(null)
   const [selectedElement, setSelectedElement] = useState(null)
+  const [currentPage, setCurrentPage] = useState('index') // Track current HTML page for page-specific CSS
+  const [selectedPages, setSelectedPages] = useState([]) // Array of selected pages for CSS scope (empty = current page only)
+  const [styleSourcePage, setStyleSourcePage] = useState(null) // Track which page styles were originally applied FROM
+  const [appliedPropertiesMap, setAppliedPropertiesMap] = useState(new Map()) // Track which properties were applied to which pages: Map<pageId, Set<property>>
+  const [isApplying, setIsApplying] = useState(false) // Flag to prevent auto-detect during apply operations
   const [isInspectorEnabled, setIsInspectorEnabled] = useState(() => {
     console.log('App: Initializing isInspectorEnabled state to: true')
     return true
@@ -93,7 +98,6 @@ function App() {
     const { listProjects } = await import('./services/projectService')
     // Get fresh list of all projects from database
     const allProjects = await listProjects(userId)
-    console.log('findNextAvailableProjectName: All projects from DB:', allProjects.map(p => ({ name: p.name, deletedAt: p.deletedAt })))
     
     // Only check active projects (not deleted ones)
     // deletedAt will be null/undefined/empty string for active projects, or a timestamp string for deleted ones
@@ -110,13 +114,10 @@ function App() {
       )
       return !isDeleted
     })
-    console.log('findNextAvailableProjectName: Active projects:', activeProjects.map(p => p.name))
     
     const existingNames = new Set(activeProjects.map(p => p.name))
-    console.log('findNextAvailableProjectName: Existing names:', Array.from(existingNames))
     
     if (!existingNames.has(baseName)) {
-      console.log('findNextAvailableProjectName: Base name available:', baseName)
       return baseName
     }
     
@@ -142,14 +143,12 @@ function App() {
     }
     
     const newName = `${baseName} (${counter})`
-    console.log('findNextAvailableProjectName: Next available name:', newName)
     return newName
   }, [])
 
   // Save project to "All Projects" (user account/Supabase) - this is the source of truth
   const saveProjectToAllProjects = useCallback(async (files, projectName, allowDuplicates = false) => {
     if (!files || files.length === 0 || !projectName) {
-      console.log('saveProjectToAllProjects: Skipping - missing files or projectName', { files: !!files, filesLength: files?.length, projectName })
       return { success: false, projectId: null }
     }
     
@@ -160,7 +159,6 @@ function App() {
     
     // Prevent duplicate saves
     if (isSavingRef.current) {
-      console.log('Save already in progress, skipping duplicate call')
       return { success: false, projectId: null, error: 'Save already in progress' }
     }
     
@@ -177,7 +175,6 @@ function App() {
         // Get fresh list from database to ensure we have the latest projects
         const { listProjects } = await import('./services/projectService')
         const allProjects = await listProjects(user.id)
-        console.log('saveProjectToAllProjects: Checking for duplicate. All projects:', allProjects.map(p => ({ name: p.name, deletedAt: p.deletedAt, deleted_at: p.deleted_at })))
         
         // Also check recently deleted projects from localStorage as a fallback
         // This ensures we don't count projects that are in "Recently Deleted" even if deleted_at isn't set in DB
@@ -197,28 +194,12 @@ function App() {
         } catch (e) {
           console.error('Error reading recently deleted from localStorage:', e)
         }
-        console.log('saveProjectToAllProjects: Deleted project IDs from localStorage:', Array.from(deletedProjectIds))
         
         // Only check active projects (not deleted ones)
         // deletedAt will be null/undefined/empty string for active projects, or a timestamp string for deleted ones
         const activeProjects = allProjects.filter(p => {
           // Check both camelCase and snake_case property names (Supabase converts to camelCase, but be safe)
           const deletedAt = p.deletedAt || p.deleted_at
-          
-          // Debug logging for the project we're checking
-          if (p.name === projectName) {
-            console.log('🔍 Checking project for duplicate:', {
-              name: p.name,
-              projectId: p.id,
-              deletedAt: deletedAt,
-              deletedAtType: typeof deletedAt,
-              isNull: deletedAt === null,
-              isUndefined: deletedAt === undefined,
-              isEmpty: deletedAt === '',
-              canParse: deletedAt && typeof deletedAt === 'string' ? !isNaN(Date.parse(deletedAt)) : false,
-              isInDeletedList: deletedProjectIds.has(p.id)
-            })
-          }
           
           // A project is deleted if:
           // 1. It has a valid deletedAt timestamp (ISO date string)
@@ -233,22 +214,11 @@ function App() {
           const isDeleted = hasDeletedTimestamp || isInDeletedList
           const isActive = !isDeleted
           
-          if (!isActive) {
-            console.log('✅ Filtering out deleted project:', p.name, {
-              hasDeletedTimestamp,
-              isInDeletedList,
-              deletedAt
-            })
-          }
           return isActive
         })
-        console.log('saveProjectToAllProjects: Active projects:', activeProjects.map(p => p.name))
-        console.log('saveProjectToAllProjects: Filtered out', allProjects.length - activeProjects.length, 'deleted projects')
-        console.log('saveProjectToAllProjects: Checking for project name:', projectName)
         
         // Skip duplicate check if we just saved this exact name (prevents modal from appearing twice)
         if (lastSavedNameRef.current === projectName) {
-          console.log('Skipping duplicate check - this name was just saved:', projectName)
           // Clear the ref so it doesn't skip on future saves
           lastSavedNameRef.current = null
         }
@@ -269,25 +239,10 @@ function App() {
           
           const isActuallyActive = !pHasDeletedTimestamp && !pIsInDeletedList
           
-          if (!isActuallyActive) {
-            console.log('⚠️ Project found but it\'s deleted - skipping:', p.name, {
-              hasDeletedTimestamp: pHasDeletedTimestamp,
-              isInDeletedList: pIsInDeletedList,
-              deletedAt: pDeletedAt
-            })
-          }
-          
           return isActuallyActive
         })
         
-        console.log('saveProjectToAllProjects: existingProject found:', existingProject ? {
-          name: existingProject.name,
-          id: existingProject.id,
-          deletedAt: existingProject.deletedAt || existingProject.deleted_at
-        } : null)
-        
         if (existingProject && lastSavedNameRef.current !== projectName) {
-          console.log('⚠️ DUPLICATE FOUND - showing modal for:', projectName, 'existing project:', existingProject)
           // Project with same name exists - force user to rename
           // Don't clear pendingNavigation - we need to preserve it for after the save
           // Just hide the save prompt while showing duplicate name modal
@@ -436,6 +391,19 @@ function App() {
     const indexHtml = files.find(f => f.name === 'index.html')
     if (indexHtml) {
       setSelectedFile(indexHtml)
+      // Update currentPage to match the selected file
+      const pageId = indexHtml.name.replace('.html', '').replace(/[^a-zA-Z0-9]/g, '-')
+      setCurrentPage(pageId)
+      console.log('Current page set on project load to:', pageId)
+    } else {
+      // If no index.html, select the first HTML file and update currentPage
+      const firstHtml = files.find(f => f.name.endsWith('.html'))
+      if (firstHtml) {
+        setSelectedFile(firstHtml)
+        const pageId = firstHtml.name.replace('.html', '').replace(/[^a-zA-Z0-9]/g, '-')
+        setCurrentPage(pageId)
+        console.log('Current page set on project load to:', pageId)
+      }
     }
     
     // Set default project name if not set
@@ -472,28 +440,38 @@ function App() {
   }
 
   const handleElementSelect = (element, inspectorState = null) => {
-    console.log('=== ELEMENT SELECT DEBUG ===')
-    console.log('handleElementSelect called with element:', element?.tagName)
-    console.log('handleElementSelect called with inspectorState:', inspectorState)
-    console.log('Current isInspectorEnabled:', isInspectorEnabled)
-    console.log('Will update inspector state?', inspectorState !== null && inspectorState !== undefined)
-    
     // Don't apply pending changes when just switching elements in the same file
     // Text changes will persist in the preview and be saved when navigating away from the file
-    console.log('Element switch - keeping text changes in preview only');
     
     // Clear text editing state when switching elements
     setIsTextEditing(false);
     
     setSelectedElement(element)
     
+    // ⭐ Always run detection when element is selected (unless during apply operations)
+    // This ensures checkboxes are updated correctly, especially after page switches
+    // Detection will find which pages have styles applied and update checkboxes accordingly
+    if (element && projectFiles && !isApplying) {
+      setTimeout(() => {
+        const appliedPages = detectAppliedPages(element, currentPage)
+        console.log('🔍 Detection in handleElementSelect (raw):', appliedPages)
+        
+        // Normalize page names to match availablePages format (remove .html, normalize)
+        // availablePages uses: f.name.replace('.html', '').replace(/[^a-zA-Z0-9]/g, '-')
+        const normalizedAppliedPages = appliedPages.map(pageName => {
+          return pageName.replace('.html', '').replace(/[^a-zA-Z0-9]/g, '-')
+        })
+        
+        console.log('🔍 Detection in handleElementSelect (normalized):', normalizedAppliedPages)
+        console.log('✅ Updating selectedPages to:', normalizedAppliedPages)
+        setSelectedPages(normalizedAppliedPages)
+      }, 50) // Small delay to ensure state is updated
+    }
+    
     // Update inspector state ONLY if explicitly provided (not undefined)
     if (inspectorState !== null && inspectorState !== undefined) {
-      console.log('*** OVERRIDING INSPECTOR STATE ***')
-      console.log('Updating inspector state from', isInspectorEnabled, 'to:', inspectorState)
       setIsInspectorEnabled(inspectorState)
     }
-    console.log('=== END ELEMENT SELECT DEBUG ===')
   }
 
   // Debounce ref for inspector toggle
@@ -501,10 +479,6 @@ function App() {
 
   // Separate handler for inspector toggle to avoid confusion
   const handleInspectorToggle = (newInspectorState) => {
-    console.log('=== TOGGLE DEBUG ===')
-    console.log('handleInspectorToggle called with:', newInspectorState)
-    console.log('Current isInspectorEnabled state:', isInspectorEnabled)
-    
     // Clear any pending toggle
     if (inspectorToggleDebounceRef.current) {
       clearTimeout(inspectorToggleDebounceRef.current)
@@ -512,7 +486,6 @@ function App() {
     
     // Debounce rapid toggles (50ms)
     inspectorToggleDebounceRef.current = setTimeout(() => {
-      console.log('Applying inspector toggle:', newInspectorState)
     setIsInspectorEnabled(newInspectorState)
       
       // Clear selection and text editing when turning off inspector
@@ -522,7 +495,6 @@ function App() {
     }
       
       inspectorToggleDebounceRef.current = null
-      console.log('=== END TOGGLE DEBUG ===')
     }, 50)
   }
 
@@ -555,52 +527,34 @@ function App() {
   }
 
   const handlePropertyChange = (property, value, childElement = null) => {
-    console.log('=== APP PROPERTY CHANGE DEBUG ===');
-    console.log('App.handlePropertyChange called:', { property, value, childElement });
-    console.log('selectedElement:', selectedElement);
-    console.log('previewPaneRef.current exists:', !!previewPaneRef.current);
-    
     if (!selectedElement || !previewPaneRef.current) {
       console.warn('Cannot update property - missing selectedElement or previewPaneRef');
-      console.log('selectedElement exists:', !!selectedElement);
-      console.log('previewPaneRef.current exists:', !!previewPaneRef.current);
       return;
     }
 
     // Handle child text content updates
     if (property === 'childTextContent') {
-      console.log('Updating child text content:', value, 'for element:', childElement);
       previewPaneRef.current.updateElementStyle('childTextContent', value, childElement);
       return;
     }
 
     // Handle text content separately (update HTML)
     if (property === 'textContent') {
-      console.log('*** TEXT CONTENT UPDATE DETECTED ***');
-      console.log('Updating text content:', value);
       setIsTextEditing(true); // Mark that text editing is active
       updateHTMLTextContent(value);
-      console.log('*** TEXT CONTENT UPDATE COMPLETE ***');
       return;
     }
 
-    console.log('Updating style property via postMessage');
     // Update preview immediately via postMessage (don't reload iframe)
     previewPaneRef.current.updateElementStyle(property, value);
 
     // Store CSS change for later persistence (don't update file immediately to avoid reload)
     storePendingCSSChange(property, value);
-    console.log('=== END APP PROPERTY CHANGE DEBUG ===');
   }
 
   const updateHTMLTextContent = (newText) => {
-    console.log('=== UPDATE HTML TEXT CONTENT DEBUG ===');
-    console.log('updateHTMLTextContent called with:', newText);
-    console.log('previewPaneRef.current exists:', !!previewPaneRef.current);
-    
     // Update the preview immediately via postMessage
     if (previewPaneRef.current) {
-      console.log('Sending text content update to iframe');
       previewPaneRef.current.updateElementStyle('textContent', newText);
     } else {
       console.error('previewPaneRef.current is not available!');
@@ -615,81 +569,50 @@ function App() {
         newText: newText,
         originalText: selectedElement.textContent
       })));
-      console.log('Text change stored for persistence:', elementKey, newText);
       
       // Set unsaved status when changes are made
       setSaveStatus('unsaved');
     }
-    console.log('=== END UPDATE HTML TEXT CONTENT DEBUG ===');
   }
 
   const updateHTMLFile = (newText, element = selectedElement, fileName = selectedFile?.name) => {
-    console.log('=== UPDATE HTML FILE DEBUG START ===');
     const targetElement = element || selectedElement;
     const targetFile = fileName ? projectFiles?.find(f => f.name === fileName) : selectedFile;
-    
-    // Aggressive debugging
-    console.log('newText:', newText);
-    console.log('newText type:', typeof newText);
-    console.log('newText length:', newText?.length);
-    console.log('targetElement exists:', !!targetElement);
-    console.log('targetFile exists:', !!targetFile);
     
     if (!targetElement || !targetFile) {
       console.error('Missing element or file!', {
         hasElement: !!targetElement,
         hasFile: !!targetFile
       });
-      console.log('=== UPDATE HTML FILE DEBUG END (FAILED - MISSING) ===');
       return;
     }
     
     if (targetFile.type !== 'html') {
       console.warn('File is not HTML:', targetFile.type);
-      console.log('=== UPDATE HTML FILE DEBUG END (FAILED - NOT HTML) ===');
       return;
     }
 
-    // Extract element properties with detailed logging
+    // Extract element properties
     const elementTag = targetElement.tagName ? targetElement.tagName.toLowerCase() : null;
     const elementId = targetElement.id || null;
     const elementClass = targetElement.className ? (typeof targetElement.className === 'string' ? targetElement.className : targetElement.className.baseVal || '') : null;
     const originalText = targetElement.textContent || targetElement.innerText || '';
-    const outerHTML = targetElement.outerHTML || '';
-    const innerHTML = targetElement.innerHTML || '';
     const hasChildren = targetElement.children && targetElement.children.length > 0;
-
-    console.log('Element properties:', {
-      tag: elementTag,
-      id: elementId,
-      class: elementClass,
-      originalText: originalText,
-      originalTextLength: originalText?.length,
-      outerHTML: outerHTML?.substring(0, 200),
-      innerHTML: innerHTML?.substring(0, 200),
-      hasChildren: hasChildren,
-      childrenCount: targetElement.children?.length || 0
-    });
-    console.log('Target file:', targetFile.name);
-    console.log('HTML content length:', targetFile.content?.length);
 
     let htmlContent = targetFile.content;
     
     if (!htmlContent) {
       console.error('HTML content is empty or undefined!');
-      console.log('=== UPDATE HTML FILE DEBUG END (FAILED - NO CONTENT) ===');
       return;
     }
 
     // Ensure newText is a string
     if (typeof newText !== 'string') {
-      console.warn('newText is not a string, converting:', typeof newText, newText);
       newText = String(newText);
     }
 
     // Strategy 1: If element has an ID, find it specifically
     if (elementId) {
-      console.log('Trying ID-based replacement for ID:', elementId);
       // Match opening tag with ID, handle both with and without nested children
       const escapedId = elementId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       
@@ -698,22 +621,15 @@ function App() {
         const idRegex = new RegExp(`(<${elementTag}[^>]*id=["']${escapedId}["'][^>]*>)([^<]*?)(</${elementTag}>)`, 'gis');
         const match = htmlContent.match(idRegex);
         if (match) {
-          console.log('Found match using ID (no children):', match[0].substring(0, 100));
-          const beforeLength = htmlContent.length;
           htmlContent = htmlContent.replace(idRegex, `$1${newText}$3`);
-          const afterLength = htmlContent.length;
-          console.log('HTML content length changed:', beforeLength, '->', afterLength);
           
           // Validate HTML content after replacement
           if (!htmlContent || htmlContent.trim().length === 0) {
             console.error('HTML content became empty after replacement!');
-            console.log('=== UPDATE HTML FILE DEBUG END (FAILED - EMPTY) ===');
             return;
           }
           
-          console.log('Updated HTML using ID selector');
           handleFileUpdate(targetFile.name, htmlContent);
-          console.log('=== UPDATE HTML FILE DEBUG END (ID SUCCESS) ===');
           return;
         }
       } else {
@@ -722,32 +638,23 @@ function App() {
         const idRegexWithText = new RegExp(`(<${elementTag}[^>]*id=["']${escapedId}["'][^>]*>)([^<]+?)(<)`, 'gis');
         const matchWithText = htmlContent.match(idRegexWithText);
         if (matchWithText && matchWithText[2].trim() === originalText.trim()) {
-          console.log('Found match using ID (has children, text before first child):', matchWithText[0].substring(0, 100));
-          const beforeLength = htmlContent.length;
           htmlContent = htmlContent.replace(idRegexWithText, `$1${newText}$3`);
-          const afterLength = htmlContent.length;
-          console.log('HTML content length changed:', beforeLength, '->', afterLength);
           
           // Validate HTML content after replacement
           if (!htmlContent || htmlContent.trim().length === 0) {
             console.error('HTML content became empty after replacement!');
-            console.log('=== UPDATE HTML FILE DEBUG END (FAILED - EMPTY) ===');
             return;
           }
           
-          console.log('Updated HTML using ID selector (preserved children)');
           handleFileUpdate(targetFile.name, htmlContent);
-          console.log('=== UPDATE HTML FILE DEBUG END (ID SUCCESS WITH CHILDREN) ===');
           return;
         }
       }
-      console.warn('No match found for ID:', elementId);
     }
 
     // Strategy 2: If element has a class, try to find it
     if (elementClass) {
       const firstClass = elementClass.split(' ')[0];
-      console.log('Trying class-based replacement for class:', firstClass);
       const escapedClass = firstClass.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       
       if (!hasChildren) {
@@ -755,22 +662,15 @@ function App() {
         const classRegex = new RegExp(`(<${elementTag}[^>]*class=["'][^"']*${escapedClass}[^"']*["'][^>]*>)([^<]*?)(</${elementTag}>)`, 'gis');
         const match = htmlContent.match(classRegex);
         if (match) {
-          console.log('Found match using class (no children):', match[0].substring(0, 100));
-          const beforeLength = htmlContent.length;
           htmlContent = htmlContent.replace(classRegex, `$1${newText}$3`);
-          const afterLength = htmlContent.length;
-          console.log('HTML content length changed:', beforeLength, '->', afterLength);
           
           // Validate HTML content after replacement
           if (!htmlContent || htmlContent.trim().length === 0) {
             console.error('HTML content became empty after replacement!');
-            console.log('=== UPDATE HTML FILE DEBUG END (FAILED - EMPTY) ===');
             return;
           }
           
-          console.log('Updated HTML using class selector');
           handleFileUpdate(targetFile.name, htmlContent);
-          console.log('=== UPDATE HTML FILE DEBUG END (CLASS SUCCESS) ===');
           return;
         }
       } else {
@@ -778,60 +678,41 @@ function App() {
         const classRegexWithText = new RegExp(`(<${elementTag}[^>]*class=["'][^"']*${escapedClass}[^"']*["'][^>]*>)([^<]+?)(<)`, 'gis');
         const matchWithText = htmlContent.match(classRegexWithText);
         if (matchWithText && matchWithText[2].trim() === originalText.trim()) {
-          console.log('Found match using class (has children, text before first child):', matchWithText[0].substring(0, 100));
-          const beforeLength = htmlContent.length;
           htmlContent = htmlContent.replace(classRegexWithText, `$1${newText}$3`);
-          const afterLength = htmlContent.length;
-          console.log('HTML content length changed:', beforeLength, '->', afterLength);
           
           // Validate HTML content after replacement
           if (!htmlContent || htmlContent.trim().length === 0) {
             console.error('HTML content became empty after replacement!');
-            console.log('=== UPDATE HTML FILE DEBUG END (FAILED - EMPTY) ===');
             return;
           }
           
-          console.log('Updated HTML using class selector (preserved children)');
           handleFileUpdate(targetFile.name, htmlContent);
-          console.log('=== UPDATE HTML FILE DEBUG END (CLASS SUCCESS WITH CHILDREN) ===');
           return;
         }
       }
-      console.warn('No match found for class:', firstClass);
     }
 
     // Strategy 3: Text-based replacement (most fallback, least reliable)
     if (originalText && originalText.trim().length > 0) {
-      console.log('Trying text-based replacement');
       // Escape special regex characters in the original text
       const escapedOriginalText = originalText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       // Try to match text between tags (more flexible pattern)
       const textRegex = new RegExp(`(>\\s*)${escapedOriginalText}(\\s*<)`, 'gs');
       const match = htmlContent.match(textRegex);
       if (match) {
-        console.log('Found match using text replacement');
-        const beforeLength = htmlContent.length;
         htmlContent = htmlContent.replace(textRegex, `$1${newText}$2`);
-        const afterLength = htmlContent.length;
-        console.log('HTML content length changed:', beforeLength, '->', afterLength);
         
         // Validate HTML content after replacement
         if (!htmlContent || htmlContent.trim().length === 0) {
           console.error('HTML content became empty after replacement!');
-          console.log('=== UPDATE HTML FILE DEBUG END (FAILED - EMPTY) ===');
           return;
         }
         
-        console.log('Updated HTML using text replacement');
         handleFileUpdate(targetFile.name, htmlContent);
-        console.log('=== UPDATE HTML FILE DEBUG END (TEXT SUCCESS) ===');
         return;
-      } else {
-        console.warn('Text pattern not found in HTML');
       }
     }
 
-    console.error('=== COULD NOT UPDATE HTML ===');
     console.error('Failed to find element in HTML. Element details:', {
       tag: elementTag,
       id: elementId,
@@ -839,12 +720,11 @@ function App() {
       originalText: originalText?.substring(0, 50),
       htmlPreview: htmlContent?.substring(0, 500)
     });
-    console.log('=== UPDATE HTML FILE DEBUG END (FAILED) ===');
   }
 
   // Manual save function that persists changes and saves to All Projects
-  const handleManualSave = useCallback(async () => {
-    if (!projectFiles) {
+  const handleManualSave = useCallback(async (overrideFiles = null) => {
+    if (!projectFiles && !overrideFiles) {
       console.warn('Cannot save - no project files');
       return;
     }
@@ -855,13 +735,6 @@ function App() {
       return;
     }
     
-    console.log('=== MANUAL SAVE TRIGGERED ===');
-    console.log('Pending text changes count:', pendingTextChangesRef.current.size);
-    console.log('Pending CSS changes count:', pendingCSSChangesRef.current.size);
-    // Log all pending CSS changes to see what we're about to save
-    pendingCSSChangesRef.current.forEach((change, key) => {
-      console.log('📋 Pending CSS change to save:', key, '->', change.property, '=', change.value, 'selector=', change.selector)
-    })
     // Clear any pending navigation and save prompt when saving manually
     setPendingNavigation(null)
     setShowSavePrompt(false)
@@ -875,22 +748,14 @@ function App() {
       // This ensures we save the latest changes without relying on async state updates
       // IMPORTANT: Don't update state here - just build the files to save
       // The UI already shows the changes (they're in the iframe), so we don't want to touch state
-      let filesToSave = projectFiles
+      // Use overrideFiles if provided (for direct CSS updates), otherwise use projectFiles
+      let filesToSave = overrideFiles || projectFiles
       
       // Apply pending CSS changes first
+      // Skip if overrideFiles is provided (those files already have the changes we want)
       // Use ref to get latest value (state might be stale in closure)
       const latestPendingCSSChanges = pendingCSSChangesRef.current
-      if (latestPendingCSSChanges.size > 0) {
-        console.log('📦 Reading pendingCSSChanges from ref:', latestPendingCSSChanges.size, 'changes')
-        console.log('📦 ALL PENDING CSS CHANGES IN MAP:')
-        latestPendingCSSChanges.forEach((change, key) => {
-          console.log(`  [${key}]`, {
-            property: change.property,
-            value: change.value,
-            selector: change.selector,
-            fileName: change.fileName
-          })
-        })
+      if (latestPendingCSSChanges.size > 0 && !overrideFiles) {
         
         const cssFiles = filesToSave.filter(f => f.name.endsWith('.css'))
         if (cssFiles.length > 0) {
@@ -1199,10 +1064,40 @@ function App() {
                     )
                   : '.section-title not found'
               })
+              
+              // Additional debug: Check for page-specific rules
+              const pageSpecificRules = cssFileToSave.content.match(/\.page-[a-z0-9-]+\s+[^{]+\{[^}]+\}/gi) || []
+              console.log('📄 Page-specific rules in CSS being saved:', pageSpecificRules.length)
+              if (pageSpecificRules.length > 0) {
+                console.log('📄 Sample page-specific rules:', pageSpecificRules.slice(-5).map(r => r.substring(0, 150)))
+              }
+              
+              // Check for the specific rule we just added
+              const realEstateRule = cssFileToSave.content.match(/\.page-real-estate[^{]*\{[^}]+\}/gi)
+              if (realEstateRule) {
+                console.log('✅ Found .page-real-estate rule in CSS being saved:', realEstateRule[0].substring(0, 200))
+              } else {
+                console.warn('⚠️ .page-real-estate rule NOT found in CSS being saved!')
+              }
             }
             
             const result = await updateProject(currentProjectName, filesForCloud, user.id)
             console.log('✅ Project updated in All Projects successfully')
+            
+            // Debug: Log CSS file info after processing
+            const cssFilesAfter = filesToSave.filter(f => f.name.endsWith('.css'))
+            if (cssFilesAfter.length > 0) {
+              cssFilesAfter.forEach(cssFile => {
+                const pageRules = cssFile.content.match(/\.page-[a-z0-9-]+/gi) || []
+                console.log('💾 CSS file AFTER processing - being saved to Supabase:', {
+                  name: cssFile.name,
+                  length: cssFile.content.length,
+                  pageRulesCount: pageRules.length,
+                  hasRealEstateRule: cssFile.content.includes('.page-real-estate'),
+                  last500Chars: cssFile.content.slice(-500)
+                })
+              })
+            }
             
             // Update projectFiles state with the saved files to keep state in sync with what was saved
             // This ensures that when the project is reloaded, the state reflects the saved changes
@@ -1295,7 +1190,6 @@ function App() {
       setSaveStatus('saved');
       setLastSaved(new Date());
       
-      console.log('=== MANUAL SAVE COMPLETED ===');
     } catch (error) {
       console.error('Manual save error:', error);
       setSaveStatus('unsaved'); // Keep as unsaved on error
@@ -1367,9 +1261,9 @@ function App() {
     const cssFile = cssFiles[0]
 
     // Build selector - use the most specific selector available
-    let selector = ''
+    let baseSelector = ''
     if (selectedElement.id) {
-      selector = `#${selectedElement.id}`
+      baseSelector = `#${selectedElement.id}`
     } else if (selectedElement.className) {
       // Use the full className, not just the first class
       const className = typeof selectedElement.className === 'string' 
@@ -1378,13 +1272,60 @@ function App() {
       const classes = className.split(' ').filter(c => c.trim().length > 0)
       if (classes.length > 0) {
         // Use all classes for more specificity
-        selector = '.' + classes.join('.')
+        baseSelector = '.' + classes.join('.')
       } else {
-        selector = selectedElement.tagName.toLowerCase()
+        baseSelector = selectedElement.tagName.toLowerCase()
       }
     } else {
-      selector = selectedElement.tagName.toLowerCase()
+      baseSelector = selectedElement.tagName.toLowerCase()
     }
+    
+    // Get available HTML pages
+    const availablePages = projectFiles
+      .filter(f => f.name.endsWith('.html'))
+      .map(f => f.name.replace('.html', '').replace(/[^a-zA-Z0-9]/g, '-'))
+    
+    // Generate selector based on selected pages
+    console.log('📝 generateFinalSelector called:')
+    console.log('  - baseSelector:', baseSelector)
+    console.log('  - selectedPages:', selectedPages)
+    console.log('  - currentPage:', currentPage)
+    console.log('  - availablePages:', availablePages)
+    
+    let selector
+    if (selectedPages.length === 0 || !selectedPages || selectedPages.length === 0) {
+      // Empty selection = current page only
+      selector = `.page-${currentPage} ${baseSelector}`
+      console.log('  → Current page only:', selector)
+    } else if (selectedPages.includes('all')) {
+      // "All pages" selected = global selector
+      selector = baseSelector
+      console.log('  → All pages (global):', selector)
+    } else {
+      // Multiple specific pages = comma-separated selectors
+      // Note: selectedPages already contains transformed page IDs (no .html, sanitized)
+      const pageSelectors = selectedPages
+        .filter(page => page !== 'all') // Filter out 'all' if somehow included
+        .map(page => {
+          // Page IDs are already in the correct format, but ensure consistency
+          const pageId = page.replace('.html', '').replace(/[^a-zA-Z0-9]/g, '-')
+          const pageSelector = `.page-${pageId} ${baseSelector}`
+          console.log(`  → Adding page selector for "${pageId}":`, pageSelector)
+          return pageSelector
+        })
+        .join(', ')
+      selector = pageSelectors
+      console.log('  → Multiple pages (comma-separated):', selector)
+    }
+    
+    console.log('🎯 GENERATED FINAL SELECTOR:', selector)
+    console.log('🎯 This will apply to:', 
+      selectedPages.length === 0 || !selectedPages || selectedPages.length === 0 
+        ? 'CURRENT PAGE ONLY' 
+        : selectedPages.includes('all') 
+          ? 'ALL PAGES' 
+          : `SPECIFIC PAGES: ${selectedPages.filter(p => p !== 'all').join(', ')}`
+    )
 
     // PRESERVE EXACT USER VALUE - don't normalize user input
     // The color picker always returns hex values like #f00000
@@ -1432,8 +1373,8 @@ function App() {
       }
     }
 
-    // Create a unique key for this CSS change
-    const changeKey = `${cssFile.name}_${selector}_${property}`
+    // Create a unique key for this CSS change (include page context)
+    const changeKey = `${cssFile.name}_${selector}_${property}_${currentPage}`
 
     console.log('🔵 Storing CSS change:', {
       property: property,
@@ -1473,11 +1414,16 @@ function App() {
       }
       newMap.set(changeKey, {
         fileName: cssFile.name,
-        selector: selector,
+        selector: selector, // This is the final selector (with page prefixes if needed)
+        baseSelector: baseSelector, // Store base selector for reference
         property: property,
         value: finalValue,
-        element: selectedElement
+        element: selectedElement,
+        selectedPages: selectedPages, // Store selected pages for reference
+        currentPage: currentPage // Store page context
       })
+      
+      console.log('✅ CSS change stored with selector:', selector)
       console.log('✅ CSS change stored in Map. Total pending:', newMap.size)
       return newMap
     })
@@ -1488,10 +1434,10 @@ function App() {
 
   // Apply pending CSS changes to files (called on manual save)
   const applyPendingCSSChanges = (persistToFiles = true) => {
-    if (pendingCSSChanges.size === 0) return
+    if (pendingCSSChanges.size === 0) return null
 
     const cssFiles = projectFiles.filter(f => f.name.endsWith('.css'))
-    if (cssFiles.length === 0) return
+    if (cssFiles.length === 0) return null
 
     // Group changes by file
     const changesByFile = new Map()
@@ -1501,6 +1447,9 @@ function App() {
       }
       changesByFile.get(change.fileName).push(change)
     })
+
+    // Map to store updated CSS content for each file
+    const updatedCSSContent = new Map()
 
     // Apply changes to each CSS file
     changesByFile.forEach((changes, fileName) => {
@@ -1621,25 +1570,549 @@ function App() {
           contentLength: cssContent.length
         })
         
-        // Also check for our specific selector
-        const selectorMatches = cssContent.match(new RegExp(`${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[^}]*{[^}]*}`, 'gi'))
-        if (selectorMatches) {
-          console.log('📝 CSS content for selector:', selector, selectorMatches[selectorMatches.length - 1])
-        }
+        // Check for all selectors that were processed (log each one)
+        changesBySelector.forEach((selectorChanges, selector) => {
+          const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+          const selectorMatches = cssContent.match(new RegExp(`${escapedSelector}[^}]*{[^}]*}`, 'gi'))
+          if (selectorMatches) {
+            console.log('📝 CSS content for selector:', selector, selectorMatches[selectorMatches.length - 1])
+          }
+        })
         
         handleFileUpdate(fileName, cssContent)
       }
+      
+      // Store updated content for return value
+      updatedCSSContent.set(fileName, cssContent)
     })
 
     // Clear pending changes after applying
     if (persistToFiles) {
       setPendingCSSChanges(new Map())
     }
+    
+    // Return updated CSS content map
+    return updatedCSSContent
   }
+
+  // Function to detect which pages have styles applied from current page
+  const detectAppliedPages = useCallback((element, currentPageName) => {
+    if (!element || !projectFiles) return []
+
+    console.log('🔍 Detecting applied pages for element on page:', currentPageName)
+
+    // Build base selector from element
+    let baseSelector = ''
+    if (element.id) {
+      baseSelector = `#${element.id}`
+    } else if (element.className) {
+      const className = typeof element.className === 'string' 
+        ? element.className 
+        : (element.className.baseVal || '')
+      const classes = className.split(' ').filter(c => c.trim().length > 0)
+      if (classes.length > 0) {
+        baseSelector = '.' + classes.join('.')
+      } else {
+        baseSelector = element.tagName.toLowerCase()
+      }
+    } else {
+      baseSelector = element.tagName.toLowerCase()
+    }
+
+    console.log('🔍 Base selector:', baseSelector)
+
+    // Get the CSS file
+    const cssFiles = projectFiles.filter(f => f.name.endsWith('.css'))
+    if (cssFiles.length === 0) {
+      console.log('⚠️ No CSS file found')
+      return []
+    }
+    const cssFile = cssFiles[0]
+    const cssContent = cssFile.content
+
+    // Normalize current page name (remove .html and sanitize)
+    const normalizedCurrentPage = currentPageName.replace('.html', '').replace(/[^a-zA-Z0-9]/g, '-')
+
+    // Find all page-specific rules for this selector (INCLUDING current page)
+    const escapedBaseSelector = baseSelector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const pageRuleRegex = new RegExp(`\\.page-([a-zA-Z0-9_-]+)\\s+${escapedBaseSelector}\\s*\\{([^}]+)\\}`, 'gi')
+    const matches = [...cssContent.matchAll(pageRuleRegex)]
+
+    if (matches.length === 0) {
+      console.log('ℹ️ No page-specific rules found for this selector')
+      return []
+    }
+
+    console.log('✅ Found', matches.length, 'page-specific rule(s) for this selector')
+
+    // Extract page names and their properties (INCLUDING current page)
+    const appliedPages = matches
+      .map(match => {
+        const pageName = match[1] // Extract page name from .page-{name}
+        const properties = match[2].trim() // Extract properties from { ... }
+        
+        // Extract property names from the CSS rule
+        const propertyNames = new Set()
+        const propertyRegex = /([a-zA-Z-]+)\s*:/g
+        let propMatch
+        while ((propMatch = propertyRegex.exec(properties)) !== null) {
+          propertyNames.add(propMatch[1])
+        }
+        
+        return {
+          pageId: pageName,
+          pageName: `${pageName}.html`, // Add .html extension for consistency
+          properties: Array.from(propertyNames),
+          hasStyles: properties.length > 0
+        }
+      })
+      .filter(page => page.hasStyles) // Only include pages that actually have properties
+
+    console.log('🔍 Detected applied pages:', appliedPages.map(p => p.pageName))
+    console.log('🔍 Applied pages with properties:', appliedPages.map(p => ({
+      page: p.pageName,
+      properties: p.properties
+    })))
+
+    // Return array of page names (including current page if it has styles)
+    return appliedPages.map(p => p.pageName)
+  }, [projectFiles])
+
+  // Apply current element's styles to selected pages
+  const applyCurrentStylesToPages = useCallback((pages) => {
+    if (!selectedElement || !projectFiles || pages.length === 0) {
+      console.warn('⚠️ Cannot apply styles - missing element, files, or pages')
+      return Promise.resolve(false)
+    }
+
+    // ⭐ Preserve selectedPages during apply so checkboxes don't disappear
+    const preservedSelectedPages = [...selectedPages]
+    console.log('💾 Preserving selectedPages during apply:', preservedSelectedPages)
+
+    setIsApplying(true) // Prevent auto-detect during apply
+
+    console.log('🎨 Applying current styles to pages:', pages)
+    console.log('Current element:', selectedElement)
+    console.log('Current page:', currentPage)
+
+    // ⭐ CRITICAL FIX: Apply any pending CSS changes FIRST
+    // This ensures recent edits (like background color) are saved to a page-specific rule
+    // before we try to copy styles to other pages
+    let updatedCSSContentMap = null
+    if (pendingCSSChanges.size > 0) {
+      console.log('💾 Applying pending CSS changes first to create page-specific rule...')
+      updatedCSSContentMap = applyPendingCSSChanges(true) // persistToFiles = true
+      console.log('✅ Pending CSS changes applied - page-specific rule should now exist')
+    }
+
+    // Build base selector from element
+    let baseSelector = ''
+    if (selectedElement.id) {
+      baseSelector = `#${selectedElement.id}`
+    } else if (selectedElement.className) {
+      const className = typeof selectedElement.className === 'string' 
+        ? selectedElement.className 
+        : (selectedElement.className.baseVal || '')
+      const classes = className.split(' ').filter(c => c.trim().length > 0)
+      if (classes.length > 0) {
+        baseSelector = '.' + classes.join('.')
+      } else {
+        baseSelector = selectedElement.tagName.toLowerCase()
+      }
+    } else {
+      baseSelector = selectedElement.tagName.toLowerCase()
+    }
+
+    console.log('🎯 Base selector:', baseSelector)
+
+    // Get CSS file (use updated content if available, otherwise use current)
+    const cssFiles = projectFiles.filter(f => f.name.endsWith('.css'))
+    if (cssFiles.length === 0) {
+      console.warn('⚠️ No CSS file found')
+      setIsApplying(false)
+      return Promise.resolve(false)
+    }
+    const cssFile = cssFiles[0]
+    // Use updated CSS content from applyPendingCSSChanges if available, otherwise use current
+    let cssContent = updatedCSSContentMap?.get(cssFile.name) || cssFile.content
+
+    // ⭐ FIXED: First look for the CURRENT page's specific rule
+    const currentPageSelector = `.page-${currentPage} ${baseSelector}`
+    const escapedCurrentPageSelector = currentPageSelector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const currentPageRuleRegex = new RegExp(`${escapedCurrentPageSelector}\\s*\\{([^}]+)\\}`, 'i')
+    const currentPageMatch = cssContent.match(currentPageRuleRegex)
+
+    let sourceProperties = ''
+    let sourceSelector = ''
+
+    if (currentPageMatch) {
+      // Found page-specific rule for current page - use this!
+      sourceProperties = currentPageMatch[1].trim()
+      sourceSelector = currentPageSelector
+      console.log('✅ Found current page-specific rule:', sourceSelector)
+      console.log('📋 Properties:', sourceProperties.substring(0, 200))
+    } else {
+      // No current page rule, search for any page-specific or global rule
+      console.log('⚠️ No current page-specific rule found, searching for alternatives...')
+      console.log('🔍 Looking for rule:', currentPageSelector)
+
+      const escapedBaseSelector = baseSelector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      // Match: .page-xxx .selector or just .selector (global)
+      const allRulesRegex = new RegExp(`([^{}]*${escapedBaseSelector}[^{}]*)\\s*\\{([^}]+)\\}`, 'gi')
+      const allMatches = cssContent.matchAll(allRulesRegex)
+      const matches = Array.from(allMatches)
+
+      console.log('🔍 Found', matches.length, 'existing rules for base selector:', baseSelector)
+
+      if (matches.length === 0) {
+        console.log('⚠️ No existing rules found for this selector anywhere')
+        console.log('💡 Tip: Make a style change first, then apply to other pages')
+        return Promise.resolve(false)
+      }
+
+      // Prefer any page-specific rule over global
+      for (const match of matches) {
+        const fullSelector = match[1].trim()
+        const properties = match[2].trim()
+
+        console.log('📋 Found rule:', fullSelector, '→', properties.substring(0, 100))
+
+        if (fullSelector.includes('.page-')) {
+          sourceProperties = properties
+          sourceSelector = fullSelector
+          console.log('✅ Using page-specific rule as source:', sourceSelector)
+          break
+        } else {
+          // Use global rule as fallback (if no page-specific rule found yet)
+          if (!sourceProperties) {
+            sourceProperties = properties
+            sourceSelector = fullSelector
+            console.log('📌 Found global rule (will use if no page-specific rule exists)')
+          }
+        }
+      }
+    }
+
+    if (!sourceProperties) {
+      console.log('⚠️ No properties found')
+      return Promise.resolve(false)
+    }
+
+    // ⭐ Track which page styles are being applied FROM
+    setStyleSourcePage(currentPage)
+    console.log('📌 Tracking source page:', currentPage)
+
+    console.log('📋 Source properties to copy:', sourceProperties.substring(0, 200))
+    console.log('📋 From selector:', sourceSelector)
+
+    // Extract which properties are being applied (for tracking)
+    const appliedPropertyNames = new Set()
+    const propertyRegex = /([a-zA-Z-]+)\s*:/g
+    let propMatch
+    while ((propMatch = propertyRegex.exec(sourceProperties)) !== null) {
+      appliedPropertyNames.add(propMatch[1])
+    }
+    console.log('📋 Properties being applied:', Array.from(appliedPropertyNames))
+
+    // Generate selectors for selected pages (exclude current page and 'all')
+    const currentPageId = currentPage.replace('.html', '').replace(/[^a-zA-Z0-9]/g, '-')
+    const targetPages = pages.filter(page => {
+      const pageId = page.replace('.html', '').replace(/[^a-zA-Z0-9]/g, '-')
+      return page !== 'all' && pageId !== currentPageId
+    })
+
+    if (targetPages.length === 0) {
+      console.log('⚠️ No target pages selected (excluding current page)')
+      console.log('💡 Current page:', currentPageId, 'Selected pages:', pages)
+      setIsApplying(false)
+      return Promise.resolve(false)
+    }
+
+    const newPageSelectors = targetPages.map(page => {
+      const pageId = page.replace('.html', '').replace(/[^a-zA-Z0-9]/g, '-')
+      return { pageId, pageName: page, selector: `.page-${pageId} ${baseSelector}` }
+    })
+
+    console.log('🎯 Target page selectors to create/update:', newPageSelectors.map(p => p.selector))
+
+    // Track which properties were applied to which pages
+    const newAppliedPropertiesMap = new Map(appliedPropertiesMap)
+    
+    // For each target page selector, add or update the rule
+    let hasChanges = false
+    newPageSelectors.forEach(({ pageId, pageName, selector: pageSelector }) => {
+      // Escape for regex
+      const escapedPageSelector = pageSelector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      const existingRuleRegex = new RegExp(`${escapedPageSelector}\\s*\\{[^}]+\\}`, 'i')
+
+      if (cssContent.match(existingRuleRegex)) {
+        // Update existing rule
+        cssContent = cssContent.replace(
+          existingRuleRegex,
+          `${pageSelector} { ${sourceProperties} }`
+        )
+        console.log('✏️ Updated existing rule for:', pageSelector)
+        hasChanges = true
+      } else {
+        // Add new rule
+        cssContent += `\n${pageSelector} { ${sourceProperties} }\n`
+        console.log('➕ Added new rule for:', pageSelector)
+        hasChanges = true
+      }
+      
+      // Track which properties were applied to this page
+      newAppliedPropertiesMap.set(pageId, new Set(appliedPropertyNames))
+      console.log('📝 Tracked properties for', pageName, ':', Array.from(appliedPropertyNames))
+    })
+    
+    // Update the applied properties map
+    setAppliedPropertiesMap(newAppliedPropertiesMap)
+
+    if (hasChanges) {
+      // Update the CSS file in state FIRST
+      handleFileUpdate(cssFile.name, cssContent)
+      setSaveStatus('unsaved')
+      console.log('✅ Applied current styles to', targetPages.length, 'page(s)')
+      console.log('📋 Updated CSS content length:', cssContent.length)
+      console.log('📋 CSS file preview (last 500 chars):', cssContent.slice(-500))
+      
+      // Build updated files array with the new CSS content
+      // Use the cssContent directly to ensure we have the latest changes
+      const updatedFiles = projectFiles.map(file => 
+        file.name === cssFile.name 
+          ? { ...file, content: cssContent }
+          : file
+      )
+      
+      // Return a promise that resolves after save completes
+      return new Promise((resolve) => {
+        // Wait a moment for state to update, then save with the updated files
+        setTimeout(async () => {
+          try {
+            console.log('💾 Auto-saving changes...')
+            
+            // Verify the CSS content has our new rules before saving
+            const hasNewRules = newPageSelectors.some(({ selector }) => 
+              cssContent.includes(selector)
+            )
+            console.log('🔍 New rules in CSS content before save:', hasNewRules ? 'YES ✓' : 'NO ✗')
+            if (hasNewRules) {
+              newPageSelectors.forEach(({ selector }) => {
+                const ruleMatch = cssContent.match(
+                  new RegExp(`${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\{[^}]+\\}`, 'i')
+                )
+                if (ruleMatch) {
+                  console.log('✅ Found rule in CSS before save:', selector, '→', ruleMatch[0].substring(0, 100))
+                } else {
+                  console.warn('⚠️ Rule NOT found in CSS before save:', selector)
+                }
+              })
+            }
+            
+            console.log('📄 CSS content length before save:', cssContent.length)
+            console.log('📄 CSS preview (last 500 chars):', cssContent.slice(-500))
+            
+            // Pass the updated files directly to handleManualSave to ensure it uses the latest CSS
+            await handleManualSave(updatedFiles)
+            console.log('✅ Styles applied and auto-saved!')
+            
+            // ⭐ Restore selectedPages after save to keep checkboxes visible
+            console.log('💾 Restoring selectedPages after apply:', preservedSelectedPages)
+            setSelectedPages(preservedSelectedPages)
+            
+            // Reset apply flag after successful save
+            setIsApplying(false)
+            
+            resolve(true)
+          } catch (error) {
+            console.error('❌ Error auto-saving:', error)
+            setIsApplying(false) // Reset flag even on error
+            resolve(false)
+          }
+        }, 300) // Delay to ensure state updates propagate
+      })
+    } else {
+      console.log('ℹ️ No changes made')
+      setIsApplying(false) // Reset flag if no changes
+      return Promise.resolve(false)
+    }
+  }, [selectedElement, projectFiles, currentPage, styleSourcePage, handleFileUpdate, handleManualSave])
+
+  // Clear applied styles from selected pages (remove CSS rules)
+  const clearAppliedStyles = useCallback(async (pagesToClear) => {
+    if (!selectedElement || !projectFiles || !pagesToClear || pagesToClear.length === 0) {
+      console.warn('⚠️ Cannot clear styles - missing element, files, or pages')
+      return false
+    }
+
+    // Use the tracked source page (where styles were applied FROM), not current page
+    const sourcePage = styleSourcePage || currentPage
+    console.log('🗑️ Clearing applied styles from pages:', pagesToClear)
+    console.log('🔒 Keeping styles on source page:', sourcePage)
+    console.log('📍 Current page:', currentPage, '| Tracked source page:', styleSourcePage)
+
+    // Build base selector from element
+    let baseSelector = ''
+    if (selectedElement.id) {
+      baseSelector = `#${selectedElement.id}`
+    } else if (selectedElement.className) {
+      const className = typeof selectedElement.className === 'string' 
+        ? selectedElement.className 
+        : (selectedElement.className.baseVal || '')
+      const classes = className.split(' ').filter(c => c.trim().length > 0)
+      if (classes.length > 0) {
+        baseSelector = '.' + classes.join('.')
+      } else {
+        baseSelector = selectedElement.tagName.toLowerCase()
+      }
+    } else {
+      baseSelector = selectedElement.tagName.toLowerCase()
+    }
+
+    console.log('🎯 Base selector:', baseSelector)
+
+    // Get CSS file
+    const cssFiles = projectFiles.filter(f => f.name.endsWith('.css'))
+    if (cssFiles.length === 0) {
+      console.warn('⚠️ No CSS file found')
+      return false
+    }
+    const cssFile = cssFiles[0]
+    let cssContent = cssFile.content
+
+    // Generate selectors for pages to clear (excluding SOURCE page, not current page)
+    const sourcePageId = sourcePage.replace('.html', '').replace(/[^a-zA-Z0-9]/g, '-')
+    const sourcePageFile = sourcePage.includes('.html') ? sourcePage : `${sourcePage}.html`
+    
+    const selectorsToRemove = pagesToClear
+      .filter(page => {
+        // Don't remove "all" or the original source page
+        if (page === 'all') return false
+        
+        // Check if this page matches the source page (handle both with and without .html)
+        const pageId = page.replace('.html', '').replace(/[^a-zA-Z0-9]/g, '-')
+        const pageFile = page.includes('.html') ? page : `${page}.html`
+        
+        if (pageId === sourcePageId || pageFile === sourcePageFile || page === sourcePage) {
+          console.log('🔒 Protecting source page from removal:', page)
+          return false
+        }
+        return true
+      })
+      .map(page => {
+        const pageId = page.replace('.html', '').replace(/[^a-zA-Z0-9]/g, '-')
+        return `.page-${pageId} ${baseSelector}`
+      })
+
+    console.log('🗑️ Selectors to remove:', selectorsToRemove)
+    console.log('🔒 Protected source page:', sourcePage, '(ID:', sourcePageId, ')')
+
+    if (selectorsToRemove.length === 0) {
+      console.log('ℹ️ No selectors to remove (all pages are source page or "all")')
+      // Still return true to allow UI to clear selection
+      return Promise.resolve(true)
+    }
+
+    // Remove each selector's rule
+    let hasChanges = false
+    selectorsToRemove.forEach(pageSelector => {
+      const escapedSelector = pageSelector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      // Match the rule including newlines before/after
+      const ruleRegex = new RegExp(`\\s*${escapedSelector}\\s*\\{[^}]+\\}\\s*\n?`, 'gi')
+
+      const beforeLength = cssContent.length
+      cssContent = cssContent.replace(ruleRegex, '')
+      const afterLength = cssContent.length
+
+      if (beforeLength > afterLength) {
+        console.log('✅ Removed rule for:', pageSelector)
+        hasChanges = true
+      } else {
+        console.log('⚠️ Rule not found for:', pageSelector)
+      }
+    })
+
+    if (!hasChanges) {
+      console.log('ℹ️ No CSS rules were removed')
+      return false
+    }
+
+    // Update the CSS file in state
+    handleFileUpdate(cssFile.name, cssContent)
+    setSaveStatus('unsaved')
+    console.log('✅ Cleared styles from', selectorsToRemove.length, 'page(s)')
+    console.log('📋 Updated CSS content length:', cssContent.length)
+
+    // Build updated files array with the new CSS content
+    const updatedFiles = projectFiles.map(file => 
+      file.name === cssFile.name 
+        ? { ...file, content: cssContent }
+        : file
+    )
+
+    // Auto-save after clearing
+    return new Promise((resolve) => {
+      setTimeout(async () => {
+        try {
+          console.log('💾 Auto-saving after clearing...')
+          
+          // Verify rules were removed
+          const removedRules = selectorsToRemove.filter(selector => 
+            !cssContent.includes(selector)
+          )
+          console.log('🔍 Rules successfully removed:', removedRules.length, 'of', selectorsToRemove.length)
+          
+          await handleManualSave(updatedFiles)
+          console.log('✅ Clear and save completed')
+          
+          // Reset the source page tracking after clearing
+          setStyleSourcePage(null)
+          console.log('📌 Reset source page tracking')
+          
+          resolve(true)
+        } catch (error) {
+          console.error('❌ Error auto-saving after clear:', error)
+          resolve(false)
+        }
+      }, 300)
+    })
+  }, [selectedElement, projectFiles, currentPage, styleSourcePage, handleFileUpdate, handleManualSave])
 
   const handleFileSelect = (file) => {
     console.log('=== FILE SELECT DEBUG ===');
     console.log('Switching from file:', selectedFile?.name, 'to file:', file?.name);
+    
+    // Update current page when HTML file is selected
+    if (file && file.name.endsWith('.html')) {
+      const pageId = file.name.replace('.html', '').replace(/[^a-zA-Z0-9]/g, '-')
+      setCurrentPage(pageId)
+      console.log('Current page updated to:', pageId)
+      
+      // ⭐ ALWAYS re-detect on page switch (this resets selections)
+      // This ensures checkboxes persist when navigating back to source page
+      if (selectedElement && projectFiles) {
+        // Use a longer delay to ensure state is fully updated
+        setTimeout(() => {
+          const appliedPages = detectAppliedPages(selectedElement, pageId)
+          console.log('🔍 Re-detected applied pages on page switch (raw):', appliedPages)
+          
+          // Normalize page names to match availablePages format (remove .html, normalize)
+          // availablePages uses: f.name.replace('.html', '').replace(/[^a-zA-Z0-9]/g, '-')
+          const normalizedAppliedPages = appliedPages.map(pageName => {
+            return pageName.replace('.html', '').replace(/[^a-zA-Z0-9]/g, '-')
+          })
+          
+          console.log('🔍 Re-detected applied pages on page switch (normalized):', normalizedAppliedPages)
+          console.log('🔍 Current selectedPages before update:', selectedPages)
+          console.log('✅ Updating selectedPages to:', normalizedAppliedPages)
+          setSelectedPages(normalizedAppliedPages)
+        }, 150) // Slightly longer delay to ensure state updates
+      } else if (selectedElement && !projectFiles) {
+        console.log('⚠️ Cannot re-detect: projectFiles not available')
+      } else if (!selectedElement) {
+        console.log('ℹ️ No element selected, skipping re-detect')
+      }
+    }
     
     // Persist pending text changes to local files when switching files
     if (pendingTextChanges.size > 0 && selectedFile && file && selectedFile.name !== file.name) {
@@ -2095,7 +2568,13 @@ function App() {
               onFileSelect={handleFileSelect}
               selectedElement={selectedElement}
               onPropertyChange={handlePropertyChange}
+              availablePages={projectFiles.filter(f => f.name.endsWith('.html')).map(f => f.name.replace('.html', '').replace(/[^a-zA-Z0-9]/g, '-'))}
+              selectedPages={selectedPages}
+              onSelectedPagesChange={setSelectedPages}
+              currentPage={currentPage}
               onFileUpdate={handleFileUpdate}
+              onApplyCurrentStyles={applyCurrentStylesToPages}
+              onClearAppliedStyles={clearAppliedStyles}
               isInspectorEnabled={isInspectorEnabled}
               isSettingsOpen={isSettingsOpen}
               onSettingsClose={() => setIsSettingsOpen(false)}

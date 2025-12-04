@@ -63,29 +63,65 @@ export const saveProject = async (projectName, files, userId) => {
   try {
     console.log('💾 saveProject: Looking for existing project:', projectName, 'user:', userId)
     
-    // Find existing ACTIVE project by name and user (exclude deleted projects)
-    // Filter out deleted projects by checking deleted_at is null
-    const { data: existingProject, error: findError } = await supabase
+    // First, let's see what we're dealing with - get ALL projects with this name
+    const { data: allMatches, error: debugError } = await supabase
       .from('projects')
-      .select('id, deleted_at')
+      .select('id, name, deleted_at, updated_at')
       .eq('name', projectName)
       .eq('user_id', userId)
-      .is('deleted_at', null) // Only find active (non-deleted) projects
-      .maybeSingle()
+      .is('deleted_at', null) // Only check active (non-deleted) projects
 
-    if (findError) {
-      console.error('❌ Error finding project:', findError)
-      throw findError
+    if (debugError) {
+      console.error('❌ Error finding project:', debugError)
+      throw debugError
     }
 
+    console.log('🔍 All active projects with this name:', allMatches)
+    console.log('🔍 Number of active matches:', allMatches?.length)
+
+    // allMatches already contains only active projects (filtered at database level)
+    const activeProjects = allMatches || []
+    console.log('✅ Active (non-deleted) projects:', activeProjects)
+    console.log('✅ Number of active projects:', activeProjects.length)
+
+    let existingProject = null
     let projectId
     let wasUpdate = false
+
+    if (activeProjects.length === 0) {
+      // No active project exists - this is a new project
+      console.log('📝 No existing project found, will CREATE new')
+      existingProject = null
+    } else if (activeProjects.length === 1) {
+      // One active project found - update it
+      existingProject = activeProjects[0]
+      console.log('✅ Found existing project, will UPDATE:', existingProject.id)
+    } else {
+      // Multiple active projects found - this shouldn't happen, but handle it
+      console.warn('⚠️ Found multiple active projects with same name!')
+      console.warn('⚠️ Projects:', activeProjects)
+      
+      // Use the most recently updated one
+      existingProject = activeProjects.sort((a, b) => 
+        new Date(b.updated_at) - new Date(a.updated_at)
+      )[0]
+      
+      console.log('✅ Using most recent project:', existingProject.id)
+      
+      // Delete the duplicates
+      const duplicateIds = activeProjects.slice(1).map(p => p.id)
+      console.log('🗑️ Deleting duplicate projects:', duplicateIds)
+      
+      await supabase
+        .from('projects')
+        .delete()
+        .in('id', duplicateIds)
+    }
 
     if (existingProject && existingProject.id) {
       // Update existing project
       projectId = existingProject.id
       wasUpdate = true
-      console.log('✅ Found existing project, will UPDATE:', projectId)
       // Try to update with deleted_at: null, but handle gracefully if column doesn't exist
       try {
         const { error: updateError } = await supabase
@@ -183,11 +219,13 @@ export const saveProject = async (projectName, files, userId) => {
 export const loadProjectById = async (projectId, userId) => {
   try {
     // Find project by ID and verify it belongs to the user
+    // Only load active (non-deleted) projects
     const { data: project, error: projectError } = await supabase
       .from('projects')
       .select('id, name, created_at, updated_at')
       .eq('id', projectId)
       .eq('user_id', userId)
+      .is('deleted_at', null) // Only load active projects
       .single()
 
     if (projectError || !project) {
@@ -225,11 +263,13 @@ export const loadProjectById = async (projectId, userId) => {
 export const loadProject = async (projectName, userId) => {
   try {
     // Find project by name and user
+    // Only load active (non-deleted) projects
     const { data: project, error: projectError } = await supabase
       .from('projects')
       .select('id, name, created_at, updated_at')
       .eq('name', projectName)
       .eq('user_id', userId)
+      .is('deleted_at', null) // Only load active projects
       .single()
 
     if (projectError || !project) {
